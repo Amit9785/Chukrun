@@ -1,0 +1,6 @@
+PRD-*.md
+AI runtime Idea.txt
+coverage/
+.idea/
+.vscode/
+bin/
