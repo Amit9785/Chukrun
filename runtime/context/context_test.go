@@ -211,32 +211,48 @@ func TestCostBudgetAtomicUpdating(t *testing.T) {
 
 func TestContextProtoSerialization(t *testing.T) {
 	mgr := NewManager("test-inst", "v1.0")
-	ctx := WithCostBudget(
-		WithExecution(
-			WithSession(mgr.NewRootContext(), "sess-1", "user-1"),
-			"exec-1", 5*time.Second, kernel.PriorityClassHigh,
-		),
-		*NewCostBudget(50.0, "USD"),
-	)
-
-	ctx, _ = WithMetadata(ctx, "test-key", "test-val")
-
-	proto := ToProto(ctx)
-
-	if proto.SessionID != "sess-1" || proto.UserID != "user-1" || proto.ExecutionID != "exec-1" {
-		t.Errorf("serialization error: %+v", proto)
-	}
-	if proto.Metadata["test-key"] != "test-val" {
-		t.Errorf("metadata serialization failed: %+v", proto.Metadata)
+	priorities := []kernel.PriorityClass{
+		kernel.PriorityClassCritical,
+		kernel.PriorityClassHigh,
+		kernel.PriorityClassNormal,
+		kernel.PriorityClassLow,
+		kernel.PriorityClassBackground,
 	}
 
-	reconstructed := FromProto(proto, mgr)
+	for _, prio := range priorities {
+		ctx := WithCostBudget(
+			WithExecution(
+				WithSession(mgr.NewRootContext(), "sess-1", "user-1"),
+				"exec-1", 5*time.Second, prio,
+			),
+			*NewCostBudget(50.0, "USD"),
+		)
 
-	if GetSessionID(reconstructed) != "sess-1" || GetUserID(reconstructed) != "user-1" || GetExecutionID(reconstructed) != "exec-1" {
-		t.Errorf("deserialization error: %+v", reconstructed)
-	}
-	if val, ok := GetMetadata(reconstructed, "test-key"); !ok || val != "test-val" {
-		t.Error("deserialization failed to restore metadata")
+		ctx, _ = WithMetadata(ctx, "test-key", "test-val")
+
+		proto := ToProto(ctx)
+
+		if proto.SessionID != "sess-1" || proto.UserID != "user-1" || proto.ExecutionID != "exec-1" {
+			t.Errorf("serialization error: %+v", proto)
+		}
+		if proto.Metadata["test-key"] != "test-val" {
+			t.Errorf("metadata serialization failed: %+v", proto.Metadata)
+		}
+
+		reconstructed := FromProto(proto, mgr)
+
+		if GetSessionID(reconstructed) != "sess-1" || GetUserID(reconstructed) != "user-1" || GetExecutionID(reconstructed) != "exec-1" {
+			t.Errorf("deserialization error: %+v", reconstructed)
+		}
+		if val, ok := GetMetadata(reconstructed, "test-key"); !ok || val != "test-val" {
+			t.Error("deserialization failed to restore metadata")
+		}
+
+		// Verify priority matches
+		reqL := reconstructed.Value(keyRequest).(*RequestLayer)
+		if reqL.Priority != prio {
+			t.Errorf("expected priority %s, got %s", prio, reqL.Priority)
+		}
 	}
 }
 
@@ -336,5 +352,56 @@ func BenchmarkSerialization(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		proto := ToProto(ctx)
 		_ = FromProto(proto, NewManager("inst-1", "v1.0"))
+	}
+}
+
+func TestContextMergeAdvanced(t *testing.T) {
+	root := NewRootContext("inst-1", "v1.0")
+
+	// 1. User layer conflicts
+	u1 := WithUser(root, "user-1", "org-1", map[string]string{"role": "admin"})
+	u2 := WithUser(root, "user-2", "org-2", map[string]string{"role": "user"})
+
+	// Overlay wins
+	mUserOverlay, err := Merge(u1, u2, MergeRules{OnConflict: OverlayWins})
+	if err != nil {
+		t.Fatalf("failed merging user overlay: %v", err)
+	}
+	if GetUserID(mUserOverlay) != "user-2" {
+		t.Errorf("expected user-2, got %s", GetUserID(mUserOverlay))
+	}
+
+	// Base wins
+	mUserBase, err := Merge(u1, u2, MergeRules{OnConflict: BaseWins})
+	if err != nil {
+		t.Fatalf("failed merging user base: %v", err)
+	}
+	if GetUserID(mUserBase) != "user-1" {
+		t.Errorf("expected user-1, got %s", GetUserID(mUserBase))
+	}
+
+	// Error on conflict
+	_, err = Merge(u1, u2, MergeRules{OnConflict: ErrorOnConflict})
+	if err == nil {
+		t.Error("expected error merging conflicting user layers under ErrorOnConflict")
+	}
+
+	// 2. Request layer conflicts
+	req1 := WithExecution(root, "exec-1", 5*time.Second, kernel.PriorityClassHigh)
+	req2 := WithExecution(root, "exec-2", 10*time.Second, kernel.PriorityClassNormal)
+
+	// Overlay wins request
+	mReqOverlay, err := Merge(req1, req2, MergeRules{OnConflict: OverlayWins})
+	if err != nil {
+		t.Fatalf("failed merging request overlay: %v", err)
+	}
+	if GetExecutionID(mReqOverlay) != "exec-2" {
+		t.Errorf("expected exec-2, got %s", GetExecutionID(mReqOverlay))
+	}
+
+	// Error on conflict request
+	_, err = Merge(req1, req2, MergeRules{OnConflict: ErrorOnConflict})
+	if err == nil {
+		t.Error("expected error merging conflicting request layers under ErrorOnConflict")
 	}
 }

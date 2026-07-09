@@ -605,7 +605,7 @@ func mergeUser(mergedCtx stdcontext.Context, base, overlay stdcontext.Context, r
 	}
 
 	mergedCtx = stdcontext.WithValue(mergedCtx, keyUser, mergedUser)
-	mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", mergedUser.UserID)
+	mergedCtx = stdcontext.WithValue(mergedCtx, compatUserID, mergedUser.UserID)
 	return mergedCtx, nil
 }
 

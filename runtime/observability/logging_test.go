@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+var (
+	compatTraceID   any = "trace_id"
+	compatSessionID any = "session_id"
+	compatUserID    any = "user_id"
+)
+
 func TestJSONLoggerLeveledLogging(t *testing.T) {
 	log := NewJSONLogger("debug")
 
@@ -54,11 +60,6 @@ func TestJSONLoggerLeveledLogging(t *testing.T) {
 	logWithFields.Info("test with fields")
 
 	// Test context lookup
-	var (
-		compatTraceID   any = "trace_id"
-		compatSessionID any = "session_id"
-		compatUserID    any = "user_id"
-	)
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, compatTraceID, "tr-xyz")
 	ctx = context.WithValue(ctx, compatSessionID, "sess-xyz")
