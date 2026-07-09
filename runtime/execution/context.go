@@ -15,6 +15,12 @@ const (
 	keyCostBudget contextKey = "cost_budget"
 )
 
+var (
+	compatTraceID   any = "trace_id"
+	compatSessionID any = "session_id"
+	compatUserID    any = "user_id"
+)
+
 // WithCorrelationIDs creates a child context with correlation IDs attached
 func WithCorrelationIDs(parent stdcontext.Context, traceID, sessionID, userID string) stdcontext.Context {
 	if sessionID != "" {
@@ -25,15 +31,15 @@ func WithCorrelationIDs(parent stdcontext.Context, traceID, sessionID, userID st
 
 	if traceID != "" {
 		parent = stdcontext.WithValue(parent, keyTraceID, traceID)
-		parent = stdcontext.WithValue(parent, "trace_id", traceID)
+		parent = stdcontext.WithValue(parent, compatTraceID, traceID)
 	}
 	if sessionID != "" {
 		parent = stdcontext.WithValue(parent, keySessionID, sessionID)
-		parent = stdcontext.WithValue(parent, "session_id", sessionID)
+		parent = stdcontext.WithValue(parent, compatSessionID, sessionID)
 	}
 	if userID != "" {
 		parent = stdcontext.WithValue(parent, keyUserID, userID)
-		parent = stdcontext.WithValue(parent, "user_id", userID)
+		parent = stdcontext.WithValue(parent, compatUserID, userID)
 	}
 
 	return parent
