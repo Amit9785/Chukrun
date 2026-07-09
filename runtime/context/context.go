@@ -12,7 +12,12 @@ import (
 
 type contextKey string
 
-const keyCustomContext contextKey = "custom_context"
+const (
+	keyRuntime contextKey = "runtime"
+	keySession contextKey = "session"
+	keyUser    contextKey = "user"
+	keyRequest contextKey = "request"
+)
 
 type CostBudget struct {
 	Limit     float64
@@ -79,119 +84,9 @@ type RequestLayer struct {
 	Metadata          map[string]string
 }
 
-type Context struct {
-	std      stdcontext.Context
-	runtime  *RuntimeLayer
-	session  *SessionLayer
-	user     *UserLayer
-	request  *RequestLayer
-	parent   *Context
-}
-
-func newContext(std stdcontext.Context, runtime *RuntimeLayer, session *SessionLayer, user *UserLayer, request *RequestLayer, parent *Context) *Context {
-	c := &Context{
-		runtime: runtime,
-		session: session,
-		user:    user,
-		request: request,
-		parent:  parent,
-	}
-	c.std = stdcontext.WithValue(std, keyCustomContext, c)
-	return c
-}
-
-// FromStdContext extracts the custom Context from a standard context.Context
-func FromStdContext(std stdcontext.Context) (*Context, bool) {
-	if std == nil {
-		return nil, false
-	}
-	if c, ok := std.Value(keyCustomContext).(*Context); ok {
-		return c, true
-	}
-	return nil, false
-}
-
-// standard context.Context interface implementation
-func (c *Context) Deadline() (time.Time, bool) {
-	return c.std.Deadline()
-}
-
-func (c *Context) Done() <-chan struct{} {
-	return c.std.Done()
-}
-
-func (c *Context) Err() error {
-	return c.std.Err()
-}
-
-func (c *Context) Value(key any) any {
-	if key == keyCustomContext {
-		return c
-	}
-	return c.std.Value(key)
-}
-
-// Read accessors
-func (c *Context) ExecutionID() string {
-	if c.request != nil {
-		return c.request.ExecutionID
-	}
-	return ""
-}
-
-func (c *Context) SessionID() string {
-	if c.session != nil {
-		return c.session.SessionID
-	}
-	return ""
-}
-
-func (c *Context) UserID() string {
-	if c.user != nil {
-		return c.user.UserID
-	}
-	if c.session != nil {
-		return c.session.UserID
-	}
-	return ""
-}
-
-func (c *Context) TraceID() string {
-	if c.request != nil {
-		return c.request.TraceID
-	}
-	return ""
-}
-
-func (c *Context) CostBudgetRemaining() *CostBudget {
-	if c.request != nil {
-		return c.request.CostBudget
-	}
-	return nil
-}
-
-func (c *Context) Metadata(key string) (string, bool) {
-	if c.request != nil && c.request.Metadata != nil {
-		val, ok := c.request.Metadata[key]
-		return val, ok
-	}
-	return "", false
-}
-
-func (c *Context) StdContext() stdcontext.Context {
-	return c.std
-}
-
-func (c *Context) AttemptNumber() int {
-	if c.request != nil {
-		return c.request.Attempt
-	}
-	return 1
-}
-
-// Manager implementation
+// Manager and contextManager kept for compatibility in transition if needed
 type Manager interface {
-	NewRootContext() *Context
+	NewRootContext() stdcontext.Context
 }
 
 type contextManager struct {
@@ -206,27 +101,35 @@ func NewManager(instanceID, version string) Manager {
 	}
 }
 
-func (m *contextManager) NewRootContext() *Context {
+func (m *contextManager) NewRootContext() stdcontext.Context {
+	return NewRootContext(m.instanceID, m.version)
+}
+
+func NewRootContext(instanceID, version string) stdcontext.Context {
 	rl := &RuntimeLayer{
-		InstanceID: m.instanceID,
-		Version:    m.version,
+		InstanceID: instanceID,
+		Version:    version,
 	}
-	return newContext(stdcontext.Background(), rl, nil, nil, nil, nil)
+	return stdcontext.WithValue(stdcontext.Background(), keyRuntime, rl)
 }
 
 // Derivations
-func (c *Context) WithSession(sessionID, userID string) *Context {
+func WithSession(ctx stdcontext.Context, sessionID, userID string) stdcontext.Context {
 	sl := &SessionLayer{
 		SessionID: sessionID,
 		UserID:    userID,
 		State:     GetSessionStore().GetOrCreate(sessionID),
 	}
-	return newContext(c.std, c.runtime, sl, c.user, c.request, c)
+	ctx = stdcontext.WithValue(ctx, keySession, sl)
+	ctx = stdcontext.WithValue(ctx, "session_id", sessionID)
+	if userID != "" {
+		ctx = stdcontext.WithValue(ctx, "user_id", userID)
+	}
+	return ctx
 }
 
-func (c *Context) WithUser(userID, orgID string, claims map[string]string) *Context {
+func WithUser(ctx stdcontext.Context, userID, orgID string, claims map[string]string) stdcontext.Context {
 	filteredClaims := make(map[string]string)
-	// Filter out sensitive auth elements per Section 26.1 (only propagate safe claims)
 	for k, v := range claims {
 		if k != "token" && k != "password" && k != "secret" && k != "jwt" {
 			filteredClaims[k] = v
@@ -237,171 +140,563 @@ func (c *Context) WithUser(userID, orgID string, claims map[string]string) *Cont
 		OrgID:  orgID,
 		Claims: filteredClaims,
 	}
-	return newContext(c.std, c.runtime, c.session, ul, c.request, c)
+	ctx = stdcontext.WithValue(ctx, keyUser, ul)
+	ctx = stdcontext.WithValue(ctx, "user_id", userID)
+	return ctx
 }
 
-func (c *Context) WithExecution(executionID string, deadline time.Duration, priority kernel.PriorityClass) *Context {
+func WithExecution(ctx stdcontext.Context, executionID string, deadline time.Duration, priority kernel.PriorityClass) stdcontext.Context {
 	var requestedDeadline time.Time
-	var std stdcontext.Context
 	var cancel stdcontext.CancelFunc
 
 	if deadline > 0 {
 		requestedDeadline = time.Now().Add(deadline)
-		std, cancel = stdcontext.WithDeadline(c.std, requestedDeadline)
+		ctx, cancel = stdcontext.WithDeadline(ctx, requestedDeadline)
 	} else {
-		std, cancel = stdcontext.WithCancel(c.std)
+		ctx, cancel = stdcontext.WithCancel(ctx)
 	}
 	_ = cancel
 
-	traceID := c.TraceID()
+	traceID := GetTraceID(ctx)
 	if traceID == "" {
 		traceID = fmt.Sprintf("tr-%s", executionID)
 	}
 
 	req := &RequestLayer{
-		ExecutionID: executionID,
-		TraceID:     traceID,
-		Deadline:    requestedDeadline,
-		Priority:    priority,
-		Attempt:     1,
-		Metadata:    make(map[string]string),
+		ExecutionID:       executionID,
+		ParentExecutionID: GetExecutionID(ctx),
+		TraceID:           traceID,
+		Deadline:          requestedDeadline,
+		Priority:          priority,
+		Attempt:           1,
+		Metadata:          make(map[string]string),
 	}
 
-	return newContext(std, c.runtime, c.session, c.user, req, c)
+	if parentReq := getRequestLayer(ctx); parentReq != nil {
+		req.CostBudget = parentReq.CostBudget
+		for k, v := range parentReq.Metadata {
+			req.Metadata[k] = v
+		}
+	}
+
+	ctx = stdcontext.WithValue(ctx, keyRequest, req)
+	ctx = stdcontext.WithValue(ctx, "trace_id", traceID)
+	ctx = stdcontext.WithValue(ctx, "execution_id", executionID)
+	return ctx
 }
 
-func (c *Context) WithChildExecution(childExecutionID string, timeoutOverride *time.Duration) *Context {
+func WithChildExecution(ctx stdcontext.Context, childExecutionID string, timeoutOverride *time.Duration) stdcontext.Context {
 	var childDeadline time.Time
 	var hasDeadline bool
 
 	if timeoutOverride != nil {
 		childDeadline = time.Now().Add(*timeoutOverride)
 		hasDeadline = true
-		if pDeadline, ok := c.Deadline(); ok {
+		if pDeadline, ok := ctx.Deadline(); ok {
 			if pDeadline.Before(childDeadline) {
-				childDeadline = pDeadline // clamp: child cannot outlive parent
+				childDeadline = pDeadline
 			}
 		}
 	} else {
-		childDeadline, hasDeadline = c.Deadline()
+		childDeadline, hasDeadline = ctx.Deadline()
 	}
 
-	var std stdcontext.Context
 	var cancel stdcontext.CancelFunc
 	if hasDeadline {
-		std, cancel = stdcontext.WithDeadline(c.std, childDeadline)
+		ctx, cancel = stdcontext.WithDeadline(ctx, childDeadline)
 	} else {
-		std, cancel = stdcontext.WithCancel(c.std)
+		ctx, cancel = stdcontext.WithCancel(ctx)
 	}
 	_ = cancel
 
-	var parentExecID string
-	if c.request != nil {
-		parentExecID = c.request.ExecutionID
-	}
+	parentExecID := GetExecutionID(ctx)
 
 	req := &RequestLayer{
 		ExecutionID:       childExecutionID,
 		ParentExecutionID: parentExecID,
-		TraceID:           c.TraceID(),
+		TraceID:           GetTraceID(ctx),
 		Deadline:          childDeadline,
 		Attempt:           1,
 		Metadata:          make(map[string]string),
 	}
-	if c.request != nil {
-		req.Priority = c.request.Priority
-		req.CostBudget = c.request.CostBudget
-		for k, v := range c.request.Metadata {
+
+	if parentReq := getRequestLayer(ctx); parentReq != nil {
+		req.Priority = parentReq.Priority
+		req.CostBudget = parentReq.CostBudget
+		for k, v := range parentReq.Metadata {
 			req.Metadata[k] = v
 		}
 	}
 
-	return newContext(std, c.runtime, c.session, c.user, req, c)
+	ctx = stdcontext.WithValue(ctx, keyRequest, req)
+	ctx = stdcontext.WithValue(ctx, "execution_id", childExecutionID)
+	return ctx
 }
 
-func (c *Context) WithAttempt(attemptNumber int) *Context {
-	if c.request == nil {
-		return c
+func WithAttempt(ctx stdcontext.Context, attemptNumber int) stdcontext.Context {
+	parentReq := getRequestLayer(ctx)
+	if parentReq == nil {
+		return ctx
 	}
 	req := &RequestLayer{
-		ExecutionID:       c.request.ExecutionID,
-		ParentExecutionID: c.request.ParentExecutionID,
-		TraceID:           c.request.TraceID,
-		Deadline:          c.request.Deadline,
-		Priority:          c.request.Priority,
-		CostBudget:        c.request.CostBudget,
+		ExecutionID:       parentReq.ExecutionID,
+		ParentExecutionID: parentReq.ParentExecutionID,
+		TraceID:           parentReq.TraceID,
+		Deadline:          parentReq.Deadline,
+		Priority:          parentReq.Priority,
+		CostBudget:        parentReq.CostBudget,
 		Attempt:           attemptNumber,
 		Metadata:          make(map[string]string),
 	}
-	for k, v := range c.request.Metadata {
+	for k, v := range parentReq.Metadata {
 		req.Metadata[k] = v
 	}
-	return newContext(c.std, c.runtime, c.session, c.user, req, c)
+	return stdcontext.WithValue(ctx, keyRequest, req)
 }
 
-func (c *Context) WithMetadata(key, value string) (*Context, error) {
+func WithMetadata(ctx stdcontext.Context, key, value string) (stdcontext.Context, error) {
+	parentReq := getRequestLayer(ctx)
 	currentSize := 0
-	if c.request != nil && c.request.Metadata != nil {
-		for k, v := range c.request.Metadata {
+	if parentReq != nil && parentReq.Metadata != nil {
+		for k, v := range parentReq.Metadata {
 			currentSize += len(k) + len(v)
 		}
 	}
 
 	newEntrySize := len(key) + len(value)
-	if c.request != nil && c.request.Metadata != nil {
-		if val, exists := c.request.Metadata[key]; exists {
+	if parentReq != nil && parentReq.Metadata != nil {
+		if val, exists := parentReq.Metadata[key]; exists {
 			currentSize -= len(key) + len(val)
 		}
 	}
 
-	// Default size limit of 4096 bytes per context
 	if currentSize+newEntrySize > 4096 {
-		return c, fmt.Errorf("metadata size limit exceeded")
+		return ctx, fmt.Errorf("metadata size limit exceeded")
 	}
 
 	req := &RequestLayer{
 		Metadata: make(map[string]string),
 	}
-	if c.request != nil {
-		req.ExecutionID = c.request.ExecutionID
-		req.ParentExecutionID = c.request.ParentExecutionID
-		req.TraceID = c.request.TraceID
-		req.Deadline = c.request.Deadline
-		req.Priority = c.request.Priority
-		req.CostBudget = c.request.CostBudget
-		req.Attempt = c.request.Attempt
-		for k, v := range c.request.Metadata {
+	if parentReq != nil {
+		req.ExecutionID = parentReq.ExecutionID
+		req.ParentExecutionID = parentReq.ParentExecutionID
+		req.TraceID = parentReq.TraceID
+		req.Deadline = parentReq.Deadline
+		req.Priority = parentReq.Priority
+		req.CostBudget = parentReq.CostBudget
+		req.Attempt = parentReq.Attempt
+		for k, v := range parentReq.Metadata {
 			req.Metadata[k] = v
 		}
 	}
 	req.Metadata[key] = value
 
-	return newContext(c.std, c.runtime, c.session, c.user, req, c), nil
+	return stdcontext.WithValue(ctx, keyRequest, req), nil
 }
 
-func (c *Context) WithCostBudget(budget CostBudget) *Context {
-	if c.request == nil {
-		return c
-	}
+func WithCostBudget(ctx stdcontext.Context, budget CostBudget) stdcontext.Context {
+	parentReq := getRequestLayer(ctx)
 	req := &RequestLayer{
-		ExecutionID:       c.request.ExecutionID,
-		ParentExecutionID: c.request.ParentExecutionID,
-		TraceID:           c.request.TraceID,
-		Deadline:          c.request.Deadline,
-		Priority:          c.request.Priority,
-		CostBudget:        &budget,
-		Attempt:           c.request.Attempt,
+		Metadata: make(map[string]string),
+	}
+	if parentReq != nil {
+		req.ExecutionID = parentReq.ExecutionID
+		req.ParentExecutionID = parentReq.ParentExecutionID
+		req.TraceID = parentReq.TraceID
+		req.Deadline = parentReq.Deadline
+		req.Priority = parentReq.Priority
+		req.Attempt = parentReq.Attempt
+		for k, v := range parentReq.Metadata {
+			req.Metadata[k] = v
+		}
+	}
+	req.CostBudget = &budget
+	return stdcontext.WithValue(ctx, keyRequest, req)
+}
+
+// Internal Accessor
+func getRequestLayer(ctx stdcontext.Context) *RequestLayer {
+	if ctx == nil {
+		return nil
+	}
+	if val := ctx.Value(keyRequest); val != nil {
+		if req, ok := val.(*RequestLayer); ok {
+			return req
+		}
+	}
+	return nil
+}
+
+// Public Accessors
+func GetRuntime(ctx stdcontext.Context) *RuntimeLayer {
+	if ctx == nil {
+		return nil
+	}
+	if val := ctx.Value(keyRuntime); val != nil {
+		if rl, ok := val.(*RuntimeLayer); ok {
+			return rl
+		}
+	}
+	return nil
+}
+
+func GetSessionID(ctx stdcontext.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if val := ctx.Value(keySession); val != nil {
+		if sl, ok := val.(*SessionLayer); ok {
+			return sl.SessionID
+		}
+	}
+	if val, ok := ctx.Value("session_id").(string); ok {
+		return val
+	}
+	return ""
+}
+
+func GetUserID(ctx stdcontext.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if val := ctx.Value(keyUser); val != nil {
+		if ul, ok := val.(*UserLayer); ok {
+			return ul.UserID
+		}
+	}
+	if val := ctx.Value(keySession); val != nil {
+		if sl, ok := val.(*SessionLayer); ok {
+			return sl.UserID
+		}
+	}
+	if val, ok := ctx.Value("user_id").(string); ok {
+		return val
+	}
+	return ""
+}
+
+func GetTraceID(ctx stdcontext.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.TraceID
+	}
+	if val, ok := ctx.Value("trace_id").(string); ok {
+		return val
+	}
+	return ""
+}
+
+func GetCostBudget(ctx stdcontext.Context) *CostBudget {
+	if ctx == nil {
+		return nil
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.CostBudget
+	}
+	return nil
+}
+
+func GetMetadata(ctx stdcontext.Context, key string) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	if req := getRequestLayer(ctx); req != nil && req.Metadata != nil {
+		val, ok := req.Metadata[key]
+		return val, ok
+	}
+	return "", false
+}
+
+func GetAttemptNumber(ctx stdcontext.Context) int {
+	if ctx == nil {
+		return 1
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.Attempt
+	}
+	return 1
+}
+
+func GetExecutionID(ctx stdcontext.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.ExecutionID
+	}
+	if val, ok := ctx.Value("execution_id").(string); ok {
+		return val
+	}
+	return ""
+}
+
+func GetParentExecutionID(ctx stdcontext.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.ParentExecutionID
+	}
+	return ""
+}
+
+func GetPriority(ctx stdcontext.Context) kernel.PriorityClass {
+	if ctx == nil {
+		return kernel.PriorityClassNormal
+	}
+	if req := getRequestLayer(ctx); req != nil {
+		return req.Priority
+	}
+	return kernel.PriorityClassNormal
+}
+
+func GetSession(ctx stdcontext.Context) SessionState {
+	if ctx == nil {
+		return nil
+	}
+	if val := ctx.Value(keySession); val != nil {
+		if sl, ok := val.(*SessionLayer); ok {
+			return sl.State
+		}
+	}
+	return nil
+}
+
+// Merging API
+type ConflictStrategy int
+
+const (
+	OverlayWins ConflictStrategy = iota
+	BaseWins
+	ErrorOnConflict
+)
+
+type MergeRules struct {
+	OnConflict ConflictStrategy
+}
+
+var ErrCrossRuntimeMerge = fmt.Errorf("cross-runtime merge rejected")
+
+func Merge(base, overlay stdcontext.Context, rules MergeRules) (stdcontext.Context, error) {
+	baseRL := GetRuntime(base)
+	overlayRL := GetRuntime(overlay)
+	if baseRL != nil && overlayRL != nil && baseRL.InstanceID != overlayRL.InstanceID {
+		return nil, ErrCrossRuntimeMerge
+	}
+
+	var err error
+	mergedCtx := base
+
+	mergedCtx, err = mergeSession(mergedCtx, base, overlay, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	mergedCtx, err = mergeUser(mergedCtx, base, overlay, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	mergedCtx, err = mergeRequest(mergedCtx, base, overlay, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	return mergedCtx, nil
+}
+
+func mergeSession(mergedCtx stdcontext.Context, base, overlay stdcontext.Context, rules MergeRules) (stdcontext.Context, error) {
+	baseSL := base.Value(keySession)
+	overlaySL := overlay.Value(keySession)
+	if overlaySL == nil {
+		return mergedCtx, nil
+	}
+
+	if baseSL == nil {
+		mergedCtx = stdcontext.WithValue(mergedCtx, keySession, overlaySL)
+		if sl, ok := overlaySL.(*SessionLayer); ok {
+			mergedCtx = stdcontext.WithValue(mergedCtx, "session_id", sl.SessionID)
+			mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", sl.UserID)
+		}
+		return mergedCtx, nil
+	}
+
+	baseState := GetSession(base)
+	overlayState := GetSession(overlay)
+	if baseState == nil || overlayState == nil {
+		return mergedCtx, nil
+	}
+
+	_, isBaseSession := baseState.(*sessionState)
+	oState, isOverlaySession := overlayState.(*sessionState)
+	if !isBaseSession || !isOverlaySession {
+		return mergedCtx, nil
+	}
+
+	if err := mergeSessionKeys(baseState, overlayState, oState, rules); err != nil {
+		return nil, err
+	}
+
+	return mergedCtx, nil
+}
+
+func mergeSessionKeys(baseState, overlayState SessionState, oState *sessionState, rules MergeRules) error {
+	oState.mu.RLock()
+	keys := make([]string, 0, len(oState.vars))
+	for k := range oState.vars {
+		keys = append(keys, k)
+	}
+	oState.mu.RUnlock()
+
+	for _, k := range keys {
+		oVal, _ := overlayState.Get(k)
+		_, exists := baseState.Get(k)
+		if exists {
+			switch rules.OnConflict {
+			case ErrorOnConflict:
+				return fmt.Errorf("conflict on session key: %s", k)
+			case OverlayWins:
+				baseState.Set(k, oVal)
+			case BaseWins:
+				// Do nothing
+			}
+		} else {
+			baseState.Set(k, oVal)
+		}
+	}
+	return nil
+}
+
+func mergeUser(mergedCtx stdcontext.Context, base, overlay stdcontext.Context, rules MergeRules) (stdcontext.Context, error) {
+	baseUL := base.Value(keyUser)
+	overlayUL := overlay.Value(keyUser)
+	if overlayUL == nil {
+		return mergedCtx, nil
+	}
+
+	if baseUL == nil {
+		mergedCtx = stdcontext.WithValue(mergedCtx, keyUser, overlayUL)
+		if ul, ok := overlayUL.(*UserLayer); ok {
+			mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", ul.UserID)
+		}
+		return mergedCtx, nil
+	}
+
+	bUl := baseUL.(*UserLayer)
+	oUl := overlayUL.(*UserLayer)
+	var mergedUser *UserLayer
+
+	switch rules.OnConflict {
+	case ErrorOnConflict:
+		return nil, fmt.Errorf("conflict on user layer")
+	case OverlayWins:
+		mergedUser = oUl
+	case BaseWins:
+		mergedUser = bUl
+	}
+
+	mergedCtx = stdcontext.WithValue(mergedCtx, keyUser, mergedUser)
+	mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", mergedUser.UserID)
+	return mergedCtx, nil
+}
+
+func mergeRequest(mergedCtx stdcontext.Context, base, overlay stdcontext.Context, rules MergeRules) (stdcontext.Context, error) {
+	baseReq := getRequestLayer(base)
+	overlayReq := getRequestLayer(overlay)
+	if overlayReq == nil {
+		return mergedCtx, nil
+	}
+
+	if baseReq == nil {
+		mergedCtx = stdcontext.WithValue(mergedCtx, keyRequest, overlayReq)
+		mergedCtx = stdcontext.WithValue(mergedCtx, "trace_id", overlayReq.TraceID)
+		mergedCtx = stdcontext.WithValue(mergedCtx, "execution_id", overlayReq.ExecutionID)
+		return mergedCtx, nil
+	}
+
+	mergedReq := &RequestLayer{
+		ExecutionID:       baseReq.ExecutionID,
+		ParentExecutionID: baseReq.ParentExecutionID,
+		TraceID:           baseReq.TraceID,
+		Deadline:          baseReq.Deadline,
+		Priority:          baseReq.Priority,
+		CostBudget:        baseReq.CostBudget,
+		Attempt:           baseReq.Attempt,
 		Metadata:          make(map[string]string),
 	}
-	for k, v := range c.request.Metadata {
-		req.Metadata[k] = v
+
+	if err := mergeRequestFields(mergedReq, baseReq, overlayReq, rules); err != nil {
+		return nil, err
 	}
-	return newContext(c.std, c.runtime, c.session, c.user, req, c)
+
+	if err := mergeRequestMetadata(mergedReq, baseReq, overlayReq, rules); err != nil {
+		return nil, err
+	}
+
+	mergedCtx = stdcontext.WithValue(mergedCtx, keyRequest, mergedReq)
+	mergedCtx = stdcontext.WithValue(mergedCtx, "trace_id", mergedReq.TraceID)
+	mergedCtx = stdcontext.WithValue(mergedCtx, "execution_id", mergedReq.ExecutionID)
+	return mergedCtx, nil
 }
 
-func (c *Context) Session() SessionState {
-	if c.session != nil {
-		return c.session.State
+func mergeRequestFields(mergedReq *RequestLayer, baseReq, overlayReq *RequestLayer, rules MergeRules) error {
+	switch rules.OnConflict {
+	case ErrorOnConflict:
+		if overlayReq.ExecutionID != "" && overlayReq.ExecutionID != baseReq.ExecutionID {
+			return fmt.Errorf("conflict on execution_id")
+		}
+	case OverlayWins:
+		applyOverlayFields(mergedReq, overlayReq)
+	case BaseWins:
+		// Do nothing
+	}
+	return nil
+}
+
+func applyOverlayFields(mergedReq *RequestLayer, overlayReq *RequestLayer) {
+	if overlayReq.ExecutionID != "" {
+		mergedReq.ExecutionID = overlayReq.ExecutionID
+	}
+	if overlayReq.ParentExecutionID != "" {
+		mergedReq.ParentExecutionID = overlayReq.ParentExecutionID
+	}
+	if overlayReq.TraceID != "" {
+		mergedReq.TraceID = overlayReq.TraceID
+	}
+	if !overlayReq.Deadline.IsZero() {
+		mergedReq.Deadline = overlayReq.Deadline
+	}
+	if overlayReq.Priority != "" {
+		mergedReq.Priority = overlayReq.Priority
+	}
+	if overlayReq.CostBudget != nil {
+		mergedReq.CostBudget = overlayReq.CostBudget
+	}
+	if overlayReq.Attempt > 0 {
+		mergedReq.Attempt = overlayReq.Attempt
+	}
+}
+
+func mergeRequestMetadata(mergedReq *RequestLayer, baseReq, overlayReq *RequestLayer, rules MergeRules) error {
+	for k, v := range baseReq.Metadata {
+		mergedReq.Metadata[k] = v
+	}
+
+	for k, v := range overlayReq.Metadata {
+		if _, exists := mergedReq.Metadata[k]; exists {
+			switch rules.OnConflict {
+			case ErrorOnConflict:
+				return fmt.Errorf("conflict on metadata key: %s", k)
+			case OverlayWins:
+				mergedReq.Metadata[k] = v
+			case BaseWins:
+				// Do nothing
+			}
+		} else {
+			mergedReq.Metadata[k] = v
+		}
 	}
 	return nil
 }

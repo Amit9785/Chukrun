@@ -66,6 +66,13 @@ func (ss *SessionStore) GetOrCreate(sessionID string) SessionState {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
+	now := time.Now()
+	for id, entry := range ss.sessions {
+		if now.Sub(entry.lastAccess) > ss.expiry {
+			delete(ss.sessions, id)
+		}
+	}
+
 	entry, exists := ss.sessions[sessionID]
 	if !exists {
 		entry = &sessionStateEntry{
@@ -75,7 +82,7 @@ func (ss *SessionStore) GetOrCreate(sessionID string) SessionState {
 		}
 		ss.sessions[sessionID] = entry
 	}
-	entry.lastAccess = time.Now()
+	entry.lastAccess = now
 	return entry.state
 }
 

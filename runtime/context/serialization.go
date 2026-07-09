@@ -1,6 +1,7 @@
 package context
 
 import (
+	stdcontext "context"
 	"time"
 
 	"chukrun/runtime/kernel"
@@ -24,11 +25,8 @@ type ContextProto struct {
 	CostBudget        *CostBudgetProto  `json:"cost_budget"`
 }
 
-func mapPriorityToInt(req *RequestLayer) int32 {
-	if req == nil {
-		return 2 // Default: Normal
-	}
-	switch req.Priority {
+func mapPriorityToInt(priority kernel.PriorityClass) int32 {
+	switch priority {
 	case kernel.PriorityClassCritical:
 		return 4
 	case kernel.PriorityClassHigh:
@@ -61,9 +59,9 @@ func mapIntToPriority(val int32) kernel.PriorityClass {
 	}
 }
 
-func (c *Context) ToProto() *ContextProto {
+func ToProto(ctx stdcontext.Context) *ContextProto {
 	var budgetProto *CostBudgetProto
-	if cb := c.CostBudgetRemaining(); cb != nil {
+	if cb := GetCostBudget(ctx); cb != nil {
 		budgetProto = &CostBudgetProto{
 			Limit:    cb.Limit,
 			Spent:    cb.Spent(),
@@ -72,30 +70,25 @@ func (c *Context) ToProto() *ContextProto {
 	}
 
 	var deadlineUnix int64
-	if d, ok := c.Deadline(); ok {
+	if d, ok := ctx.Deadline(); ok {
 		deadlineUnix = d.UnixNano() / int64(time.Millisecond)
 	}
 
-	var parentExecID string
-	if c.request != nil {
-		parentExecID = c.request.ParentExecutionID
-	}
-
 	metadataCopy := make(map[string]string)
-	if c.request != nil && c.request.Metadata != nil {
-		for k, v := range c.request.Metadata {
+	if req := getRequestLayer(ctx); req != nil && req.Metadata != nil {
+		for k, v := range req.Metadata {
 			metadataCopy[k] = v
 		}
 	}
 
 	return &ContextProto{
-		SessionID:         c.SessionID(),
-		UserID:            c.UserID(),
-		ExecutionID:       c.ExecutionID(),
-		ParentExecutionID: parentExecID,
-		TraceID:           c.TraceID(),
+		SessionID:         GetSessionID(ctx),
+		UserID:            GetUserID(ctx),
+		ExecutionID:       GetExecutionID(ctx),
+		ParentExecutionID: GetParentExecutionID(ctx),
+		TraceID:           GetTraceID(ctx),
 		DeadlineUnixMs:    deadlineUnix,
-		Priority:          mapPriorityToInt(c.request),
+		Priority:          mapPriorityToInt(GetPriority(ctx)),
 		Metadata:          metadataCopy,
 		CostBudget:        budgetProto,
 	}
@@ -113,45 +106,39 @@ func parseDeadline(deadlineUnixMs int64) time.Duration {
 	return deadline
 }
 
-func restoreExecution(ctx *Context, proto *ContextProto, deadline time.Duration, priorityClass kernel.PriorityClass) *Context {
-	if proto.ExecutionID == "" {
-		return ctx
-	}
-	ctx = ctx.WithExecution(proto.ExecutionID, deadline, priorityClass)
-	if ctx.request != nil {
-		if proto.ParentExecutionID != "" {
-			ctx.request.ParentExecutionID = proto.ParentExecutionID
-		}
-		if proto.TraceID != "" {
-			ctx.request.TraceID = proto.TraceID
-		}
-	}
-	return ctx
-}
-
-func FromProto(proto *ContextProto, mgr Manager) *Context {
+func FromProto(proto *ContextProto, mgr Manager) stdcontext.Context {
 	if proto == nil {
 		return nil
 	}
 	ctx := mgr.NewRootContext()
 	if proto.SessionID != "" {
-		ctx = ctx.WithSession(proto.SessionID, proto.UserID)
+		ctx = WithSession(ctx, proto.SessionID, proto.UserID)
 	} else if proto.UserID != "" {
-		ctx = ctx.WithUser(proto.UserID, "", nil)
+		ctx = WithUser(ctx, proto.UserID, "", nil)
 	}
 
 	priorityClass := mapIntToPriority(proto.Priority)
 	deadline := parseDeadline(proto.DeadlineUnixMs)
-	ctx = restoreExecution(ctx, proto, deadline, priorityClass)
+	if proto.ExecutionID != "" {
+		ctx = WithExecution(ctx, proto.ExecutionID, deadline, priorityClass)
+		if req := getRequestLayer(ctx); req != nil {
+			if proto.ParentExecutionID != "" {
+				req.ParentExecutionID = proto.ParentExecutionID
+			}
+			if proto.TraceID != "" {
+				req.TraceID = proto.TraceID
+			}
+		}
+	}
 
 	if proto.CostBudget != nil {
 		cb := NewCostBudget(proto.CostBudget.Limit, proto.CostBudget.Currency)
 		cb.AddSpent(proto.CostBudget.Spent)
-		ctx = ctx.WithCostBudget(*cb)
+		ctx = WithCostBudget(ctx, *cb)
 	}
 
 	for k, v := range proto.Metadata {
-		ctx, _ = ctx.WithMetadata(k, v)
+		ctx, _ = WithMetadata(ctx, k, v)
 	}
 
 	return ctx

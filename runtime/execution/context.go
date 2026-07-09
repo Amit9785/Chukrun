@@ -17,56 +17,40 @@ const (
 
 // WithCorrelationIDs creates a child context with correlation IDs attached
 func WithCorrelationIDs(parent stdcontext.Context, traceID, sessionID, userID string) stdcontext.Context {
-	c, ok := context.FromStdContext(parent)
-	if !ok {
-		mgr := context.NewManager("default", "1.0.0")
-		c = mgr.NewRootContext()
-	}
-
 	if sessionID != "" {
-		c = c.WithSession(sessionID, userID)
+		parent = context.WithSession(parent, sessionID, userID)
 	} else if userID != "" {
-		c = c.WithUser(userID, "", nil)
+		parent = context.WithUser(parent, userID, "", nil)
 	}
 
-	std := c.StdContext()
 	if traceID != "" {
-		std = stdcontext.WithValue(std, keyTraceID, traceID)
-		std = stdcontext.WithValue(std, "trace_id", traceID)
+		parent = stdcontext.WithValue(parent, keyTraceID, traceID)
+		parent = stdcontext.WithValue(parent, "trace_id", traceID)
 	}
 	if sessionID != "" {
-		std = stdcontext.WithValue(std, keySessionID, sessionID)
-		std = stdcontext.WithValue(std, "session_id", sessionID)
+		parent = stdcontext.WithValue(parent, keySessionID, sessionID)
+		parent = stdcontext.WithValue(parent, "session_id", sessionID)
 	}
 	if userID != "" {
-		std = stdcontext.WithValue(std, keyUserID, userID)
-		std = stdcontext.WithValue(std, "user_id", userID)
+		parent = stdcontext.WithValue(parent, keyUserID, userID)
+		parent = stdcontext.WithValue(parent, "user_id", userID)
 	}
 
-	return std
+	return parent
 }
 
 // WithCostBudget creates a child context with a cost budget attached
 func WithCostBudget(parent stdcontext.Context, budget float64) stdcontext.Context {
-	c, ok := context.FromStdContext(parent)
-	if !ok {
-		mgr := context.NewManager("default", "1.0.0")
-		c = mgr.NewRootContext()
-	}
-
 	cb := context.NewCostBudget(budget, "USD")
-	c = c.WithCostBudget(*cb)
-
-	std := stdcontext.WithValue(c.StdContext(), keyCostBudget, budget)
-	return std
+	parent = context.WithCostBudget(parent, *cb)
+	parent = stdcontext.WithValue(parent, keyCostBudget, budget)
+	return parent
 }
 
 // GetTraceID extracts trace_id from context
 func GetTraceID(ctx stdcontext.Context) string {
-	if c, ok := context.FromStdContext(ctx); ok {
-		if tid := c.TraceID(); tid != "" {
-			return tid
-		}
+	if tid := context.GetTraceID(ctx); tid != "" {
+		return tid
 	}
 	if val, ok := ctx.Value(keyTraceID).(string); ok {
 		return val
@@ -79,10 +63,8 @@ func GetTraceID(ctx stdcontext.Context) string {
 
 // GetSessionID extracts session_id from context
 func GetSessionID(ctx stdcontext.Context) string {
-	if c, ok := context.FromStdContext(ctx); ok {
-		if sid := c.SessionID(); sid != "" {
-			return sid
-		}
+	if sid := context.GetSessionID(ctx); sid != "" {
+		return sid
 	}
 	if val, ok := ctx.Value(keySessionID).(string); ok {
 		return val
@@ -95,10 +77,8 @@ func GetSessionID(ctx stdcontext.Context) string {
 
 // GetUserID extracts user_id from context
 func GetUserID(ctx stdcontext.Context) string {
-	if c, ok := context.FromStdContext(ctx); ok {
-		if uid := c.UserID(); uid != "" {
-			return uid
-		}
+	if uid := context.GetUserID(ctx); uid != "" {
+		return uid
 	}
 	if val, ok := ctx.Value(keyUserID).(string); ok {
 		return val
@@ -111,10 +91,8 @@ func GetUserID(ctx stdcontext.Context) string {
 
 // GetCostBudget extracts cost_budget from context
 func GetCostBudget(ctx stdcontext.Context) float64 {
-	if c, ok := context.FromStdContext(ctx); ok {
-		if cb := c.CostBudgetRemaining(); cb != nil {
-			return cb.Limit
-		}
+	if cb := context.GetCostBudget(ctx); cb != nil {
+		return cb.Limit
 	}
 	if val, ok := ctx.Value(keyCostBudget).(float64); ok {
 		return val
