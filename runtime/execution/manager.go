@@ -152,6 +152,10 @@ func (em *ExecutionManager) Submit(ctx context.Context, req *kernel.ExecutionReq
 	default:
 	}
 
+	if em.lifecycle.GetState() == kernel.StateReady {
+		_ = em.lifecycle.Transition(kernel.StateRunning)
+	}
+
 	return exec, nil
 }
 
