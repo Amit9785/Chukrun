@@ -54,10 +54,15 @@ func TestJSONLoggerLeveledLogging(t *testing.T) {
 	logWithFields.Info("test with fields")
 
 	// Test context lookup
+	var (
+		compatTraceID   any = "trace_id"
+		compatSessionID any = "session_id"
+		compatUserID    any = "user_id"
+	)
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "trace_id", "tr-xyz")
-	ctx = context.WithValue(ctx, "session_id", "sess-xyz")
-	ctx = context.WithValue(ctx, "user_id", "user-xyz")
+	ctx = context.WithValue(ctx, compatTraceID, "tr-xyz")
+	ctx = context.WithValue(ctx, compatSessionID, "sess-xyz")
+	ctx = context.WithValue(ctx, compatUserID, "user-xyz")
 
 	logWithCtx := log.WithContext(ctx)
 	logWithCtx.Info("test with context correlation")

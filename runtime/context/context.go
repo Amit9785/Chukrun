@@ -19,6 +19,13 @@ const (
 	keyRequest contextKey = "request"
 )
 
+var (
+	compatTraceID     any = "trace_id"
+	compatSessionID   any = "session_id"
+	compatUserID      any = "user_id"
+	compatExecutionID any = "execution_id"
+)
+
 type CostBudget struct {
 	Limit     float64
 	spentBits *uint64 // pointer to uint64 representing float64 bits, shared across derived contexts
@@ -121,9 +128,9 @@ func WithSession(ctx stdcontext.Context, sessionID, userID string) stdcontext.Co
 		State:     GetSessionStore().GetOrCreate(sessionID),
 	}
 	ctx = stdcontext.WithValue(ctx, keySession, sl)
-	ctx = stdcontext.WithValue(ctx, "session_id", sessionID)
+	ctx = stdcontext.WithValue(ctx, compatSessionID, sessionID)
 	if userID != "" {
-		ctx = stdcontext.WithValue(ctx, "user_id", userID)
+		ctx = stdcontext.WithValue(ctx, compatUserID, userID)
 	}
 	return ctx
 }
@@ -141,7 +148,7 @@ func WithUser(ctx stdcontext.Context, userID, orgID string, claims map[string]st
 		Claims: filteredClaims,
 	}
 	ctx = stdcontext.WithValue(ctx, keyUser, ul)
-	ctx = stdcontext.WithValue(ctx, "user_id", userID)
+	ctx = stdcontext.WithValue(ctx, compatUserID, userID)
 	return ctx
 }
 
@@ -180,8 +187,8 @@ func WithExecution(ctx stdcontext.Context, executionID string, deadline time.Dur
 	}
 
 	ctx = stdcontext.WithValue(ctx, keyRequest, req)
-	ctx = stdcontext.WithValue(ctx, "trace_id", traceID)
-	ctx = stdcontext.WithValue(ctx, "execution_id", executionID)
+	ctx = stdcontext.WithValue(ctx, compatTraceID, traceID)
+	ctx = stdcontext.WithValue(ctx, compatExecutionID, executionID)
 	return ctx
 }
 
@@ -229,7 +236,7 @@ func WithChildExecution(ctx stdcontext.Context, childExecutionID string, timeout
 	}
 
 	ctx = stdcontext.WithValue(ctx, keyRequest, req)
-	ctx = stdcontext.WithValue(ctx, "execution_id", childExecutionID)
+	ctx = stdcontext.WithValue(ctx, compatExecutionID, childExecutionID)
 	return ctx
 }
 
@@ -517,8 +524,8 @@ func mergeSession(mergedCtx stdcontext.Context, base, overlay stdcontext.Context
 	if baseSL == nil {
 		mergedCtx = stdcontext.WithValue(mergedCtx, keySession, overlaySL)
 		if sl, ok := overlaySL.(*SessionLayer); ok {
-			mergedCtx = stdcontext.WithValue(mergedCtx, "session_id", sl.SessionID)
-			mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", sl.UserID)
+			mergedCtx = stdcontext.WithValue(mergedCtx, compatSessionID, sl.SessionID)
+			mergedCtx = stdcontext.WithValue(mergedCtx, compatUserID, sl.UserID)
 		}
 		return mergedCtx, nil
 	}
@@ -579,7 +586,7 @@ func mergeUser(mergedCtx stdcontext.Context, base, overlay stdcontext.Context, r
 	if baseUL == nil {
 		mergedCtx = stdcontext.WithValue(mergedCtx, keyUser, overlayUL)
 		if ul, ok := overlayUL.(*UserLayer); ok {
-			mergedCtx = stdcontext.WithValue(mergedCtx, "user_id", ul.UserID)
+			mergedCtx = stdcontext.WithValue(mergedCtx, compatUserID, ul.UserID)
 		}
 		return mergedCtx, nil
 	}
@@ -611,8 +618,8 @@ func mergeRequest(mergedCtx stdcontext.Context, base, overlay stdcontext.Context
 
 	if baseReq == nil {
 		mergedCtx = stdcontext.WithValue(mergedCtx, keyRequest, overlayReq)
-		mergedCtx = stdcontext.WithValue(mergedCtx, "trace_id", overlayReq.TraceID)
-		mergedCtx = stdcontext.WithValue(mergedCtx, "execution_id", overlayReq.ExecutionID)
+		mergedCtx = stdcontext.WithValue(mergedCtx, compatTraceID, overlayReq.TraceID)
+		mergedCtx = stdcontext.WithValue(mergedCtx, compatExecutionID, overlayReq.ExecutionID)
 		return mergedCtx, nil
 	}
 
@@ -636,8 +643,8 @@ func mergeRequest(mergedCtx stdcontext.Context, base, overlay stdcontext.Context
 	}
 
 	mergedCtx = stdcontext.WithValue(mergedCtx, keyRequest, mergedReq)
-	mergedCtx = stdcontext.WithValue(mergedCtx, "trace_id", mergedReq.TraceID)
-	mergedCtx = stdcontext.WithValue(mergedCtx, "execution_id", mergedReq.ExecutionID)
+	mergedCtx = stdcontext.WithValue(mergedCtx, compatTraceID, mergedReq.TraceID)
+	mergedCtx = stdcontext.WithValue(mergedCtx, compatExecutionID, mergedReq.ExecutionID)
 	return mergedCtx, nil
 }
 
