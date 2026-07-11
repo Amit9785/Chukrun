@@ -145,3 +145,32 @@ func TestRestartCooldownEnforcement(t *testing.T) {
 		t.Errorf("check should succeed after sleep, got: %v", err)
 	}
 }
+
+func TestHealthStatusAndExecutionLocking(t *testing.T) {
+	// 1. Test HealthStatus helpers
+	h := &HealthStatus{State: StateReady}
+	if !h.IsReady() || !h.IsReadyOrDegraded() || !h.IsLive() {
+		t.Error("IsReady/IsReadyOrDegraded/IsLive failed for StateReady")
+	}
+
+	h.State = StateDegraded
+	if h.IsReady() || !h.IsReadyOrDegraded() || !h.IsLive() {
+		t.Error("IsReadyOrDegraded/IsLive failed for StateDegraded")
+	}
+
+	h.State = StateUninitialized
+	if h.IsLive() {
+		t.Error("IsLive should be false for StateUninitialized")
+	}
+
+	// 2. Test Execution locks
+	exec := &Execution{}
+	exec.Lock()
+	exec.ID = "lock-test"
+	exec.Unlock()
+
+	exec.RLock()
+	_ = exec.ID
+	exec.RUnlock()
+}
+

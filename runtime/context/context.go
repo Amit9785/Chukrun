@@ -63,6 +63,16 @@ func (cb *CostBudget) AddSpent(amount float64) {
 	}
 }
 
+func (cb *CostBudget) TryReserve(amount float64) bool {
+	if cb.spentBits == nil {
+		return true
+	}
+	if cb.Limit <= 0 {
+		return true
+	}
+	return cb.Spent()+amount <= cb.Limit
+}
+
 type RuntimeLayer struct {
 	InstanceID string
 	Version    string
@@ -362,14 +372,24 @@ func GetSessionID(ctx stdcontext.Context) string {
 	return ""
 }
 
+func GetUserLayer(ctx stdcontext.Context) *UserLayer {
+	if ctx == nil {
+		return nil
+	}
+	if val := ctx.Value(keyUser); val != nil {
+		if ul, ok := val.(*UserLayer); ok {
+			return ul
+		}
+	}
+	return nil
+}
+
 func GetUserID(ctx stdcontext.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	if val := ctx.Value(keyUser); val != nil {
-		if ul, ok := val.(*UserLayer); ok {
-			return ul.UserID
-		}
+	if ul := GetUserLayer(ctx); ul != nil {
+		return ul.UserID
 	}
 	if val := ctx.Value(keySession); val != nil {
 		if sl, ok := val.(*SessionLayer); ok {

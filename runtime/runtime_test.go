@@ -279,6 +279,11 @@ func TestConcurrencyLimiting(t *testing.T) {
 
 type mockMiddlewareForAdd struct{}
 
+func (m *mockMiddlewareForAdd) Name() string               { return "mockForAdd" }
+func (m *mockMiddlewareForAdd) Dependencies() []execution.Capability { return nil }
+func (m *mockMiddlewareForAdd) Provides() []execution.Capability     { return nil }
+func (m *mockMiddlewareForAdd) FailureMode() execution.FailureMode   { return execution.FailClosed }
+
 func (m *mockMiddlewareForAdd) Handle(ctx context.Context, req *kernel.ExecutionRequest, next execution.Handler) (*kernel.ExecutionResult, error) {
 	return next(ctx, req)
 }
@@ -601,6 +606,78 @@ func TestExecutionEngineBatching(t *testing.T) {
 		if res.State != kernel.ExecStateSucceeded {
 			t.Errorf("expected SUCCEEDED, got: %s", res.State)
 		}
+	}
+
+	_ = rt.Shutdown(ctx)
+}
+
+func TestCoreRuntimeMiddlewareBootstrapValidationError(t *testing.T) {
+	p := &mockProvider{name: "mock-llm"}
+	// caching has unsatisfied dependency on authorized
+	cachingMw := execution.NewCachingMiddleware()
+
+	rt := NewRuntime(
+		WithProvider(p),
+		WithMiddleware(cachingMw),
+	)
+
+	ctx := context.Background()
+	err := rt.Initialize(ctx)
+	if err == nil {
+		t.Fatal("expected initialization to fail due to unsatisified dependencies in middleware")
+	}
+	if !errors.Is(err, execution.ErrUnsatisfiedDependency) {
+		t.Errorf("expected ErrUnsatisfiedDependency, got: %v", err)
+	}
+}
+
+func TestCoreRuntimeMiddlewareIntegration(t *testing.T) {
+	p := &mockProvider{name: "mock-llm"}
+	testVerifier := func(token string) (string, string, map[string]string, error) {
+		if token == "valid-token" {
+			return "user-123", "org-456", map[string]string{"role": "user"}, nil
+		}
+		return "", "", nil, errors.New("invalid token")
+	}
+	authMw := execution.NewAuthenticationMiddleware(testVerifier)
+	authzMw := execution.NewAuthorizationMiddleware()
+	cachingMw := execution.NewCachingMiddleware()
+
+	rt := NewRuntime(
+		WithProvider(p),
+		WithMiddleware(authMw),
+		WithMiddleware(authzMw),
+		WithMiddleware(cachingMw),
+	)
+
+	ctx := context.Background()
+	if err := rt.Initialize(ctx); err != nil {
+		t.Fatalf("unexpected initialization error: %v", err)
+	}
+
+	// 1. Unauthenticated request -> should fail closed
+	res1, err := rt.Execute(ctx, &kernel.ExecutionRequest{
+		ID:          "req-unauth",
+		ProviderRef: "mock-llm",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res1.Status != kernel.StatusFailed || res1.Error.Category != string(kernel.ErrCategoryAuth) {
+		t.Errorf("expected auth failure, got status %s, error %v", res1.Status, res1.Error)
+	}
+
+	// 2. Authenticated request -> should succeed
+	res2, err := rt.Execute(ctx, &kernel.ExecutionRequest{
+		ID:          "req-auth",
+		ProviderRef: "mock-llm",
+		Metadata:    map[string]string{"auth-token": "valid-token"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res2.Status != kernel.StatusSucceeded {
+		t.Errorf("expected succeeded status, got %s", res2.Status)
 	}
 
 	_ = rt.Shutdown(ctx)
