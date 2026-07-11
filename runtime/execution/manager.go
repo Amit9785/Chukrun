@@ -564,6 +564,17 @@ func (em *ExecutionManager) handleResult(exec *kernel.Execution, lastErr error, 
 
 	if lastErr == nil && executionResult != nil {
 		exec.Result = executionResult
+		if executionResult.Error != nil || (executionResult.Status != "" && executionResult.Status != kernel.StatusSucceeded) {
+			// Middleware short-circuit failure
+			if executionResult.State == "" {
+				exec.State = kernel.ExecStateFailed
+				exec.Result.State = kernel.ExecStateFailed
+			} else {
+				exec.State = executionResult.State
+			}
+			exec.Result.Duration = time.Since(startTime)
+			return
+		}
 		exec.Result.State = kernel.ExecStateSucceeded
 		exec.Result.Status = kernel.StatusSucceeded
 		exec.Result.AttemptCount = len(exec.Attempts)
@@ -741,7 +752,18 @@ func (em *ExecutionManager) runExecution(exec *kernel.Execution) {
 	}
 
 	startTime := time.Now()
-	executionResult, lastErr := em.executeAttempts(totalCtx, exec, p, retryPolicy, timeoutPolicy)
+	var executionResult *kernel.ExecutionResult
+	var lastErr error
+
+	if em.pipeline != nil {
+		coreHandler := func(pipeCtx context.Context, pipeReq *kernel.ExecutionRequest) (*kernel.ExecutionResult, error) {
+			return em.executeAttempts(pipeCtx, exec, p, retryPolicy, timeoutPolicy)
+		}
+		chained := em.pipeline.Wrap(coreHandler)
+		executionResult, lastErr = chained(totalCtx, exec.Request)
+	} else {
+		executionResult, lastErr = em.executeAttempts(totalCtx, exec, p, retryPolicy, timeoutPolicy)
+	}
 	em.handleResult(exec, lastErr, executionResult, startTime)
 
 	exec.RLock()

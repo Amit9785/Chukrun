@@ -12,6 +12,11 @@ type mockMiddleware struct {
 	traces *[]string
 }
 
+func (m *mockMiddleware) Name() string               { return m.name }
+func (m *mockMiddleware) Dependencies() []Capability { return nil }
+func (m *mockMiddleware) Provides() []Capability     { return nil }
+func (m *mockMiddleware) FailureMode() FailureMode   { return FailClosed }
+
 func (m *mockMiddleware) Handle(ctx context.Context, req *kernel.ExecutionRequest, next Handler) (*kernel.ExecutionResult, error) {
 	*m.traces = append(*m.traces, "pre:"+m.name)
 	res, err := next(ctx, req)

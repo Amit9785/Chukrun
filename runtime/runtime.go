@@ -80,6 +80,10 @@ func (r *CoreRuntime) Initialize(ctx context.Context) error {
 
 	// 6. Setup Middleware Pipeline
 	r.pipeline = execution.NewPipeline(r.middlewares)
+	if err := r.pipeline.Validate(); err != nil {
+		_ = r.lifecycle.Transition(kernel.StateFailed)
+		return err
+	}
 
 	// 7. Setup Execution Manager
 	r.execution = execution.NewExecutionManager(
@@ -259,6 +263,10 @@ func (r *CoreRuntime) Restart(ctx context.Context) error {
 	}
 
 	r.pipeline = execution.NewPipeline(r.middlewares)
+	if err := r.pipeline.Validate(); err != nil {
+		_ = r.lifecycle.Transition(kernel.StateFailed)
+		return err
+	}
 	r.execution = execution.NewExecutionManager(
 		r.registry,
 		r.pipeline,
