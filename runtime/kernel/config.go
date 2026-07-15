@@ -18,6 +18,7 @@ type ConcurrencyConfig struct {
 }
 
 type RuntimeConfig struct {
+	Environment       string            `json:"environment" yaml:"environment"`
 	LogLevel          string            `json:"log_level" yaml:"log_level"`
 	StartupTimeoutMS  int               `json:"startup_timeout_ms" yaml:"startup_timeout_ms"`
 	ShutdownTimeoutMS int               `json:"shutdown_timeout_ms" yaml:"shutdown_timeout_ms"`
@@ -41,23 +42,56 @@ type LifecycleConfig struct {
 	ExposeInternalErrors bool `json:"expose_internal_errors" yaml:"expose_internal_errors"`
 }
 
-type TelemetryConfig struct {
+type LoggingRedactionConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+}
+
+type LoggingConfig struct {
+	Level        string                 `json:"level" yaml:"level"`
+	Format       string                 `json:"format" yaml:"format"` // json | human
+	Sinks        []string               `json:"sinks" yaml:"sinks"`   // stdout | file | otlp
+	FilePath     string                 `json:"file_path" yaml:"file_path"`
+	OTLPEndpoint string                 `json:"otlp_endpoint" yaml:"otlp_endpoint"`
+	Redaction    LoggingRedactionConfig `json:"redaction" yaml:"redaction"`
+}
+
+type TracingSamplingConfig struct {
+	DefaultRate       float64            `json:"default_rate" yaml:"default_rate"`
+	PriorityOverrides map[string]float64 `json:"priority_overrides" yaml:"priority_overrides"`
+}
+
+type TracingConfig struct {
+	Exporter string                `json:"exporter" yaml:"exporter"`
+	Endpoint string                `json:"endpoint" yaml:"endpoint"`
+	Sampling TracingSamplingConfig `json:"sampling" yaml:"sampling"`
+}
+
+type MetricsConfig struct {
 	Exporter string `json:"exporter" yaml:"exporter"`
 	Endpoint string `json:"endpoint" yaml:"endpoint"`
 }
 
+type TelemetryConfig struct {
+	Metrics MetricsConfig `json:"metrics" yaml:"metrics"`
+	Tracing TracingConfig `json:"tracing" yaml:"tracing"`
+}
+
 type Config struct {
-	Runtime    RuntimeConfig    `json:"runtime" yaml:"runtime"`
-	Lifecycle  LifecycleConfig  `json:"lifecycle" yaml:"lifecycle"`
-	Providers  []ProviderConfig `json:"providers" yaml:"providers"`
-	Middleware MiddlewareConfig `json:"middleware" yaml:"middleware"`
-	Telemetry  TelemetryConfig  `json:"telemetry" yaml:"telemetry"`
+	Runtime                            RuntimeConfig    `json:"runtime" yaml:"runtime"`
+	Lifecycle                          LifecycleConfig  `json:"lifecycle" yaml:"lifecycle"`
+	Providers                          []ProviderConfig `json:"providers" yaml:"providers"`
+	Middleware                         MiddlewareConfig `json:"middleware" yaml:"middleware"`
+	Logging                            LoggingConfig    `json:"logging" yaml:"logging"`
+	Telemetry                          TelemetryConfig  `json:"telemetry" yaml:"telemetry"`
+	DebugMode                          bool             `json:"debug_mode" yaml:"debug_mode"`
+	DebugModeAcknowledgeProductionRisk bool             `json:"debug_mode_acknowledge_production_risk" yaml:"debug_mode_acknowledge_production_risk"`
 }
 
 // GetDefaultConfig returns the baseline default configuration
 func GetDefaultConfig() *Config {
 	return &Config{
 		Runtime: RuntimeConfig{
+			Environment:       "development",
 			LogLevel:          "info",
 			StartupTimeoutMS:  10000,
 			ShutdownTimeoutMS: 15000,
@@ -74,9 +108,33 @@ func GetDefaultConfig() *Config {
 		Middleware: MiddlewareConfig{
 			Order: []string{"logging", "metrics"},
 		},
-		Telemetry: TelemetryConfig{
-			Exporter: "stdout",
+		Logging: LoggingConfig{
+			Level:  "info",
+			Format: "json",
+			Sinks:  []string{"stdout"},
+			Redaction: LoggingRedactionConfig{
+				Enabled: true,
+			},
 		},
+		Telemetry: TelemetryConfig{
+			Metrics: MetricsConfig{
+				Exporter: "prometheus",
+				Endpoint: ":9090",
+			},
+			Tracing: TracingConfig{
+				Exporter: "otlp",
+				Endpoint: "https://collector.internal:4317",
+				Sampling: TracingSamplingConfig{
+					DefaultRate: 0.10,
+					PriorityOverrides: map[string]float64{
+						"critical": 1.0,
+						"high":     0.5,
+					},
+				},
+			},
+		},
+		DebugMode:                          false,
+		DebugModeAcknowledgeProductionRisk: false,
 	}
 }
 
@@ -163,6 +221,9 @@ func getEnvInt(key string) (int, bool) {
 }
 
 func overrideFromEnv(cfg *Config) {
+	if val := os.Getenv("RUNTIME_ENVIRONMENT"); val != "" {
+		cfg.Runtime.Environment = val
+	}
 	if val := os.Getenv("RUNTIME_LOG_LEVEL"); val != "" {
 		cfg.Runtime.LogLevel = val
 	}
@@ -187,11 +248,29 @@ func overrideFromEnv(cfg *Config) {
 	if val := os.Getenv("LIFECYCLE_EXPOSE_INTERNAL_ERRORS"); val != "" {
 		cfg.Lifecycle.ExposeInternalErrors = (strings.ToLower(val) == "true")
 	}
+	if val := os.Getenv("RUNTIME_DEBUG_MODE"); val != "" {
+		cfg.DebugMode = (strings.ToLower(val) == "true")
+	}
+	if val := os.Getenv("RUNTIME_DEBUG_MODE_ACKNOWLEDGE_PRODUCTION_RISK"); val != "" {
+		cfg.DebugModeAcknowledgeProductionRisk = (strings.ToLower(val) == "true")
+	}
 }
 
 func applyCodeOverrides(cfg *Config, codeOverrides *Config) {
 	if codeOverrides == nil {
 		return
+	}
+	applyRuntimeOverrides(cfg, codeOverrides)
+	applyLifecycleOverrides(cfg, codeOverrides)
+	applyLoggingOverrides(cfg, codeOverrides)
+	applyTelemetryOverrides(cfg, codeOverrides)
+	cfg.DebugMode = codeOverrides.DebugMode
+	cfg.DebugModeAcknowledgeProductionRisk = codeOverrides.DebugModeAcknowledgeProductionRisk
+}
+
+func applyRuntimeOverrides(cfg *Config, codeOverrides *Config) {
+	if codeOverrides.Runtime.Environment != "" {
+		cfg.Runtime.Environment = codeOverrides.Runtime.Environment
 	}
 	if codeOverrides.Runtime.LogLevel != "" {
 		cfg.Runtime.LogLevel = codeOverrides.Runtime.LogLevel
@@ -208,6 +287,9 @@ func applyCodeOverrides(cfg *Config, codeOverrides *Config) {
 	if codeOverrides.Runtime.Concurrency.QueueSize != 0 {
 		cfg.Runtime.Concurrency.QueueSize = codeOverrides.Runtime.Concurrency.QueueSize
 	}
+}
+
+func applyLifecycleOverrides(cfg *Config, codeOverrides *Config) {
 	if codeOverrides.Lifecycle != (LifecycleConfig{}) {
 		if codeOverrides.Lifecycle.RestartCooldownMS != 0 {
 			cfg.Lifecycle.RestartCooldownMS = codeOverrides.Lifecycle.RestartCooldownMS
@@ -221,11 +303,45 @@ func applyCodeOverrides(cfg *Config, codeOverrides *Config) {
 	if len(codeOverrides.Middleware.Order) > 0 {
 		cfg.Middleware.Order = codeOverrides.Middleware.Order
 	}
-	if codeOverrides.Telemetry.Exporter != "" {
-		cfg.Telemetry.Exporter = codeOverrides.Telemetry.Exporter
+}
+
+func applyLoggingOverrides(cfg *Config, codeOverrides *Config) {
+	if codeOverrides.Logging.Level != "" {
+		cfg.Logging.Level = codeOverrides.Logging.Level
 	}
-	if codeOverrides.Telemetry.Endpoint != "" {
-		cfg.Telemetry.Endpoint = codeOverrides.Telemetry.Endpoint
+	if codeOverrides.Logging.Format != "" {
+		cfg.Logging.Format = codeOverrides.Logging.Format
+	}
+	if len(codeOverrides.Logging.Sinks) > 0 {
+		cfg.Logging.Sinks = codeOverrides.Logging.Sinks
+	}
+	if codeOverrides.Logging.FilePath != "" {
+		cfg.Logging.FilePath = codeOverrides.Logging.FilePath
+	}
+	if codeOverrides.Logging.OTLPEndpoint != "" {
+		cfg.Logging.OTLPEndpoint = codeOverrides.Logging.OTLPEndpoint
+	}
+	cfg.Logging.Redaction.Enabled = codeOverrides.Logging.Redaction.Enabled
+}
+
+func applyTelemetryOverrides(cfg *Config, codeOverrides *Config) {
+	if codeOverrides.Telemetry.Metrics.Exporter != "" {
+		cfg.Telemetry.Metrics.Exporter = codeOverrides.Telemetry.Metrics.Exporter
+	}
+	if codeOverrides.Telemetry.Metrics.Endpoint != "" {
+		cfg.Telemetry.Metrics.Endpoint = codeOverrides.Telemetry.Metrics.Endpoint
+	}
+	if codeOverrides.Telemetry.Tracing.Exporter != "" {
+		cfg.Telemetry.Tracing.Exporter = codeOverrides.Telemetry.Tracing.Exporter
+	}
+	if codeOverrides.Telemetry.Tracing.Endpoint != "" {
+		cfg.Telemetry.Tracing.Endpoint = codeOverrides.Telemetry.Tracing.Endpoint
+	}
+	if codeOverrides.Telemetry.Tracing.Sampling.DefaultRate != 0 {
+		cfg.Telemetry.Tracing.Sampling.DefaultRate = codeOverrides.Telemetry.Tracing.Sampling.DefaultRate
+	}
+	if len(codeOverrides.Telemetry.Tracing.Sampling.PriorityOverrides) > 0 {
+		cfg.Telemetry.Tracing.Sampling.PriorityOverrides = codeOverrides.Telemetry.Tracing.Sampling.PriorityOverrides
 	}
 }
 
@@ -233,46 +349,10 @@ func applyCodeOverrides(cfg *Config, codeOverrides *Config) {
 func (c *Config) Validate() error {
 	var errors []string
 
-	// Validate LogLevel
-	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true, "fatal": true}
-	if !validLevels[strings.ToLower(c.Runtime.LogLevel)] {
-		errors = append(errors, fmt.Sprintf("invalid log_level: %q", c.Runtime.LogLevel))
-	}
-
-	// Validate timeouts
-	if c.Runtime.StartupTimeoutMS <= 0 {
-		errors = append(errors, fmt.Sprintf("startup_timeout_ms must be positive, got: %d", c.Runtime.StartupTimeoutMS))
-	}
-	if c.Runtime.ShutdownTimeoutMS <= 0 {
-		errors = append(errors, fmt.Sprintf("shutdown_timeout_ms must be positive, got: %d", c.Runtime.ShutdownTimeoutMS))
-	}
-
-	// Validate lifecycle
-	if c.Lifecycle.RestartCooldownMS <= 0 {
-		errors = append(errors, fmt.Sprintf("restart_cooldown_ms must be positive, got: %d", c.Lifecycle.RestartCooldownMS))
-	}
-
-	// Validate concurrency
-	if c.Runtime.Concurrency.GlobalLimit <= 0 {
-		errors = append(errors, fmt.Sprintf("global_limit must be positive, got: %d", c.Runtime.Concurrency.GlobalLimit))
-	}
-	if c.Runtime.Concurrency.QueueSize < 0 {
-		errors = append(errors, fmt.Sprintf("queue_size must be non-negative, got: %d", c.Runtime.Concurrency.QueueSize))
-	}
-
-	// Validate providers
-	for i, p := range c.Providers {
-		if p.Name == "" {
-			errors = append(errors, fmt.Sprintf("provider[%d].name cannot be empty", i))
-		}
-		if p.Type == "" {
-			errors = append(errors, fmt.Sprintf("provider[%d].type cannot be empty", i))
-		}
-		// If API key is still structured as ${secret:...}, it means it wasn't resolved
-		if secretRegex.MatchString(p.APIKey) {
-			errors = append(errors, fmt.Sprintf("provider[%d] API key secret placeholder %q could not be resolved", i, p.APIKey))
-		}
-	}
+	errors = c.validateRuntime(errors)
+	errors = c.validateLifecycle(errors)
+	errors = c.validateProviders(errors)
+	errors = c.validateDebugMode(errors)
 
 	if len(errors) > 0 {
 		return NewError(
@@ -284,4 +364,53 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c *Config) validateRuntime(errors []string) []string {
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true, "fatal": true}
+	if !validLevels[strings.ToLower(c.Runtime.LogLevel)] {
+		errors = append(errors, fmt.Sprintf("invalid log_level: %q", c.Runtime.LogLevel))
+	}
+	if c.Runtime.StartupTimeoutMS <= 0 {
+		errors = append(errors, fmt.Sprintf("startup_timeout_ms must be positive, got: %d", c.Runtime.StartupTimeoutMS))
+	}
+	if c.Runtime.ShutdownTimeoutMS <= 0 {
+		errors = append(errors, fmt.Sprintf("shutdown_timeout_ms must be positive, got: %d", c.Runtime.ShutdownTimeoutMS))
+	}
+	if c.Runtime.Concurrency.GlobalLimit <= 0 {
+		errors = append(errors, fmt.Sprintf("global_limit must be positive, got: %d", c.Runtime.Concurrency.GlobalLimit))
+	}
+	if c.Runtime.Concurrency.QueueSize < 0 {
+		errors = append(errors, fmt.Sprintf("queue_size must be non-negative, got: %d", c.Runtime.Concurrency.QueueSize))
+	}
+	return errors
+}
+
+func (c *Config) validateLifecycle(errors []string) []string {
+	if c.Lifecycle.RestartCooldownMS <= 0 {
+		errors = append(errors, fmt.Sprintf("restart_cooldown_ms must be positive, got: %d", c.Lifecycle.RestartCooldownMS))
+	}
+	return errors
+}
+
+func (c *Config) validateProviders(errors []string) []string {
+	for i, p := range c.Providers {
+		if p.Name == "" {
+			errors = append(errors, fmt.Sprintf("provider[%d].name cannot be empty", i))
+		}
+		if p.Type == "" {
+			errors = append(errors, fmt.Sprintf("provider[%d].type cannot be empty", i))
+		}
+		if secretRegex.MatchString(p.APIKey) {
+			errors = append(errors, fmt.Sprintf("provider[%d] API key secret placeholder %q could not be resolved", i, p.APIKey))
+		}
+	}
+	return errors
+}
+
+func (c *Config) validateDebugMode(errors []string) []string {
+	if c.DebugMode && strings.ToLower(c.Runtime.Environment) == "production" && !c.DebugModeAcknowledgeProductionRisk {
+		errors = append(errors, "debug mode is enabled in production environment without acknowledgment of risk (debug_mode_acknowledge_production_risk: true)")
+	}
+	return errors
 }

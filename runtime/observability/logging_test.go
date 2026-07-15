@@ -1,75 +1,191 @@
 package observability
 
 import (
-	"context"
+	stdcontext "context"
+	"errors"
+	"sync"
 	"testing"
+	"time"
+
+	rtcontext "chukrun/runtime/context"
+	"chukrun/runtime/kernel"
 )
 
-var (
-	compatTraceID   any = "trace_id"
-	compatSessionID any = "session_id"
-	compatUserID    any = "user_id"
-)
+type MockSink struct {
+	mu      sync.Mutex
+	records []LogEntry
+}
 
-func TestJSONLoggerLeveledLogging(t *testing.T) {
-	log := NewJSONLogger("debug")
+func (s *MockSink) Write(ctx stdcontext.Context, entry LogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records = append(s.records, entry)
+	return nil
+}
 
-	if LogLevel(LevelDebug).String() != "DEBUG" {
-		t.Errorf("expected level string DEBUG, got: %s", LogLevel(LevelDebug).String())
-	}
-	if LogLevel(LevelInfo).String() != "INFO" {
-		t.Errorf("expected level string INFO, got: %s", LogLevel(LevelInfo).String())
-	}
-	if LogLevel(LevelWarn).String() != "WARN" {
-		t.Errorf("expected level string WARN, got: %s", LogLevel(LevelWarn).String())
-	}
-	if LogLevel(LevelError).String() != "ERROR" {
-		t.Errorf("expected level string ERROR, got: %s", LogLevel(LevelError).String())
-	}
-	if LogLevel(LevelFatal).String() != "FATAL" {
-		t.Errorf("expected level string FATAL, got: %s", LogLevel(LevelFatal).String())
-	}
-	if LogLevel(-1).String() != "INFO" {
-		t.Errorf("expected default level string INFO, got: %s", LogLevel(-1).String())
+func (s *MockSink) Close() error { return nil }
+
+func (s *MockSink) GetRecords() []LogEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copied := make([]LogEntry, len(s.records))
+	copy(copied, s.records)
+	return copied
+}
+
+func setupMockSink() *MockSink {
+	sink := &MockSink{records: make([]LogEntry, 0)}
+	ClearLogSinks()
+	RegisterLogSink(sink)
+	return sink
+}
+
+func TestPlatformLoggerBasicLeveled(t *testing.T) {
+	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
+
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
+
+	logger.Debug(ctx, "debug msg")
+	logger.Info(ctx, "info msg")
+	logger.Warn(ctx, "warn msg")
+	logger.Error(ctx, "error msg")
+
+	time.Sleep(100 * time.Millisecond)
+
+	records := sink.GetRecords()
+	if len(records) < 4 {
+		t.Fatalf("expected at least 4 log records, got: %d", len(records))
 	}
 
-	if ParseLevel("debug") != LevelDebug {
-		t.Error("expected debug level")
+	if records[0].Message != "debug msg" || records[0].Level != LevelDebug {
+		t.Errorf("unexpected record 0: %+v", records[0])
 	}
-	if ParseLevel("WARN") != LevelWarn {
-		t.Error("expected warn level")
+	if records[1].Message != "info msg" || records[1].Level != LevelInfo {
+		t.Errorf("unexpected record 1: %+v", records[1])
 	}
-	if ParseLevel("ERROR") != LevelError {
-		t.Error("expected error level")
+}
+
+func TestPlatformLoggerHotReloadLevel(t *testing.T) {
+	sink := setupMockSink()
+	SetGlobalLogLevel(LevelWarn)
+
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
+
+	logger.Debug(ctx, "should drop debug")
+	logger.Info(ctx, "should drop info")
+	logger.Warn(ctx, "should keep warn")
+
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Errorf("expected exactly 1 warn log, got: %d", len(records))
 	}
-	if ParseLevel("FATAL") != LevelFatal {
-		t.Error("expected fatal level")
+	if records[0].Message != "should keep warn" || records[0].Level != LevelWarn {
+		t.Errorf("unexpected logged record: %+v", records[0])
 	}
-	if ParseLevel("unknown") != LevelInfo {
-		t.Error("expected default level to be info")
+}
+
+func TestPlatformLoggerErrorExpansion(t *testing.T) {
+	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
+
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
+
+	platErr := kernel.NewError(kernel.ErrCategoryValidation, "validation error text", true, errors.New("underlying failure"))
+	logger.Error(ctx, "failed request", ErrorField(platErr))
+
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 error log, got: %d", len(records))
+	}
+	lastRecord := records[0]
+
+	fields := make(map[string]any)
+	for _, f := range lastRecord.Fields {
+		fields[f.Key] = f.Value
 	}
 
-	// Test output logging methods (Verify no panics)
-	log.Debug("test debug", Field{Key: "k1", Value: "v1"})
-	log.Info("test info", Field{Key: "api_key", Value: "secret_value"}) // test redaction
-	log.Warn("test warn")
-	log.Error("test error")
+	if fields["error.category"] != "validation" {
+		t.Errorf("expected error.category to be validation, got %v", fields["error.category"])
+	}
+	if fields["error.retryable"] != true {
+		t.Errorf("expected error.retryable to be true, got %v", fields["error.retryable"])
+	}
+	if fields["error.message"] != "validation error text" {
+		t.Errorf("expected error.message validation error text, got %v", fields["error.message"])
+	}
+	if fields["error.cause"] != "underlying failure" {
+		t.Errorf("expected error.cause underlying failure, got %v", fields["error.cause"])
+	}
+}
 
-	// Test clone and field appending
-	logWithFields := log.WithFields(Field{Key: "global_field", Value: 42})
-	logWithFields.Info("test with fields")
+func TestPlatformLoggerEnrichment(t *testing.T) {
+	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
 
-	// Test context lookup
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, compatTraceID, "tr-xyz")
-	ctx = context.WithValue(ctx, compatSessionID, "sess-xyz")
-	ctx = context.WithValue(ctx, compatUserID, "user-xyz")
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
 
-	logWithCtx := log.WithContext(ctx)
-	logWithCtx.Info("test with context correlation")
+	enrichCtx := rtcontext.WithSession(ctx, "sess-123", "user-456")
+	enrichCtx = rtcontext.WithExecution(enrichCtx, "exec-789", 5*time.Second, kernel.PriorityClassHigh)
 
-	// Test nil context safety
-	var nilCtx context.Context
-	logWithNilCtx := log.WithContext(nilCtx)
-	logWithNilCtx.Info("test with nil context")
+	logger.Info(enrichCtx, "enriched message")
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log, got: %d", len(records))
+	}
+	enrichedRecord := records[0]
+
+	fields := make(map[string]any)
+	for _, f := range enrichedRecord.Fields {
+		fields[f.Key] = f.Value
+	}
+
+	if fields["session_id"] != "sess-123" {
+		t.Errorf("expected session_id sess-123, got %v", fields["session_id"])
+	}
+	if fields["user_id"] != "user-456" {
+		t.Errorf("expected user_id user-456, got %v", fields["user_id"])
+	}
+	if fields["execution_id"] != "exec-789" {
+		t.Errorf("expected execution_id exec-789, got %v", fields["execution_id"])
+	}
+	if fields["attempt_number"] != 1 {
+		t.Errorf("expected attempt_number 1, got %v", fields["attempt_number"])
+	}
+}
+
+func TestPlatformLoggerRedaction(t *testing.T) {
+	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
+
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
+
+	redactCtx := rtcontext.WithSensitiveVariable(ctx, "password", "my-secret-password")
+	logger.Info(redactCtx, "confidential info", SensitiveField("token", "super-secret-token"))
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log, got: %d", len(records))
+	}
+	redactedRecord := records[0]
+
+	fields := make(map[string]any)
+	for _, f := range redactedRecord.Fields {
+		fields[f.Key] = f.Value
+	}
+
+	if fields["token"] != "[REDACTED]" {
+		t.Error("expected token field to be redacted")
+	}
+	if fields["password"] != "[REDACTED]" {
+		t.Error("expected password Context field to be redacted")
+	}
 }

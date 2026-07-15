@@ -259,7 +259,7 @@ func (m *LoggingMiddleware) FailureMode() FailureMode   { return FailOpen }
 func (m *LoggingMiddleware) Handle(ctx context.Context, req *kernel.ExecutionRequest, next Handler) (*kernel.ExecutionResult, error) {
 	start := time.Now()
 	if m.logger != nil {
-		m.logger.Info(fmt.Sprintf("middleware: starting execution request %s", req.ID))
+		m.logger.Info(ctx, fmt.Sprintf("middleware: starting execution request %s", req.ID))
 	}
 
 	res, err := next(ctx, req)
@@ -270,7 +270,7 @@ func (m *LoggingMiddleware) Handle(ctx context.Context, req *kernel.ExecutionReq
 		if res != nil {
 			status = string(res.Status)
 		}
-		m.logger.Info(fmt.Sprintf("middleware: finished execution request %s in %v with status %s", req.ID, duration, status))
+		m.logger.Info(ctx, fmt.Sprintf("middleware: finished execution request %s in %v with status %s", req.ID, duration, status))
 	}
 
 	return res, err
@@ -295,7 +295,7 @@ func (m *TelemetryMiddleware) FailureMode() FailureMode   { return FailOpen }
 
 func (m *TelemetryMiddleware) Handle(ctx context.Context, req *kernel.ExecutionRequest, next Handler) (*kernel.ExecutionResult, error) {
 	if m.telemetry != nil {
-		m.telemetry.IncrementCounter("middleware_executions_total", map[string]string{"name": m.Name()})
+		m.telemetry.Counter("middleware_executions_total").Inc(ctx, observability.Label{Key: "name", Value: m.Name()})
 	}
 	return next(ctx, req)
 }
