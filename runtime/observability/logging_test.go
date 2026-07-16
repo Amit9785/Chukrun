@@ -315,6 +315,14 @@ func TestPlatformLoggerWithChild(t *testing.T) {
 }
 
 func TestPlatformLoggerFatalLogging(t *testing.T) {
+	origExit := exitFunc
+	defer func() { exitFunc = origExit }()
+
+	var exitCode int
+	exitFunc = func(code int) {
+		exitCode = code
+	}
+
 	sink := setupMockSink()
 	SetGlobalLogLevel(LevelDebug)
 	logger := NewPlatformLogger()
@@ -327,5 +335,8 @@ func TestPlatformLoggerFatalLogging(t *testing.T) {
 	}
 	if records[0].Level != LevelFatal {
 		t.Errorf("expected LevelFatal, got %v", records[0].Level)
+	}
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
 	}
 }

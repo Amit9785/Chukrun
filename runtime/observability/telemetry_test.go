@@ -133,7 +133,7 @@ func TestTelemetryMetricExporter(t *testing.T) {
 func TestTelemetryPrioritySampling(t *testing.T) {
 	SetGlobalSamplingRate(0.0)
 	SetPriorityOverride("critical", 1.0)
-	defer SetPriorityOverride("critical", 0.0)
+	defer SetPriorityOverride("critical", 1.0)
 
 	tel := NewInMemoryTelemetry()
 	ctx := rtcontext.WithExecution(stdcontext.Background(), "exec-crit", 5*time.Second, kernel.PriorityClassCritical)

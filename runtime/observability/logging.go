@@ -167,6 +167,8 @@ func ShutdownLogging() {
 	globalRegistry.wg.Wait()
 }
 
+var exitFunc = os.Exit
+
 // Global active log level (hot-reloadable)
 var currentLogLevel int32 = int32(LevelInfo)
 
@@ -250,7 +252,7 @@ func (l *PlatformLogger) log(ctx stdcontext.Context, level LogLevel, msg string,
 
 	if level == LevelFatal {
 		ShutdownLogging()
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
