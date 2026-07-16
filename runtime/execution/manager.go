@@ -457,15 +457,15 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 			if outcome.res != nil {
 				if outcome.res.TokenUsage != nil {
 					em.telemetry.RecordTokenUsage(attemptCtx, observability.TokenUsage{
-						PromptTokens:     outcome.res.TokenUsage.PromptTokens,
-						CompletionTokens: outcome.res.TokenUsage.CompletionTokens,
-						TotalTokens:      outcome.res.TokenUsage.TotalTokens,
+						PromptTokens:     int64(outcome.res.TokenUsage.PromptTokens),
+						CompletionTokens: int64(outcome.res.TokenUsage.CompletionTokens),
+						TotalTokens:      int64(outcome.res.TokenUsage.TotalTokens),
 						Provider:         p.Name(),
 					})
 				}
-				if outcome.res.CostUSD != 0 {
+				if outcome.res.Cost != nil && outcome.res.Cost.AmountUSD != 0 {
 					em.telemetry.RecordCost(attemptCtx, observability.CostEstimate{
-						AmountUSD: outcome.res.CostUSD,
+						AmountUSD: outcome.res.Cost.AmountUSD,
 						Provider:  p.Name(),
 					})
 				}
@@ -479,7 +479,7 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 		exec.Unlock()
 
 		// Cost fallback estimation on failure
-		promptText := exec.Request.Prompt
+		promptText := extractPrompt(exec.Request.Payload)
 		estUsage := observability.EstimateStreamingTokenUsage(promptText, "")
 		estUsage.Provider = p.Name()
 		em.telemetry.RecordTokenUsage(attemptCtx, estUsage)
@@ -508,7 +508,7 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 		exec.Unlock()
 
 		// Cost fallback estimation on timeout
-		promptText := exec.Request.Prompt
+		promptText := extractPrompt(exec.Request.Payload)
 		estUsage := observability.EstimateStreamingTokenUsage(promptText, "")
 		estUsage.Provider = p.Name()
 		em.telemetry.RecordTokenUsage(attemptCtx, estUsage)
@@ -945,4 +945,21 @@ func (em *ExecutionManager) ActiveCount() int {
 
 func isTerminalState(state kernel.ExecutionState) bool {
 	return state == kernel.ExecStateSucceeded || state == kernel.ExecStateFailed || state == kernel.ExecStateCancelled || state == kernel.ExecStateTimedOut
+}
+
+func extractPrompt(payload any) string {
+	if payload == nil {
+		return ""
+	}
+	if str, ok := payload.(string); ok {
+		return str
+	}
+	if m, ok := payload.(map[string]any); ok {
+		if promptVal, ok := m["prompt"]; ok {
+			if str, ok := promptVal.(string); ok {
+				return str
+			}
+		}
+	}
+	return fmt.Sprintf("%v", payload)
 }

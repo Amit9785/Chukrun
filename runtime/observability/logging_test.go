@@ -169,7 +169,7 @@ func TestPlatformLoggerRedaction(t *testing.T) {
 	ctx := stdcontext.Background()
 
 	redactCtx := rtcontext.WithSensitiveVariable(ctx, "password", "my-secret-password")
-	logger.Info(redactCtx, "confidential info", SensitiveField("token", "super-secret-token"))
+	logger.Info(redactCtx, "confidential info", Field{Key: "password", Value: "my-secret-password"}, SensitiveField("token", "super-secret-token"))
 	time.Sleep(100 * time.Millisecond)
 	records := sink.GetRecords()
 	if len(records) != 1 {
