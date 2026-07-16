@@ -331,6 +331,36 @@ func WithCostBudget(ctx stdcontext.Context, budget CostBudget) stdcontext.Contex
 	return stdcontext.WithValue(ctx, keyRequest, req)
 }
 
+type sensitiveKeysKey struct{}
+
+func WithSensitiveKey(ctx stdcontext.Context, key string) stdcontext.Context {
+	keys, _ := ctx.Value(sensitiveKeysKey{}).(map[string]bool)
+	newKeys := make(map[string]bool)
+	for k, v := range keys {
+		newKeys[k] = v
+	}
+	newKeys[key] = true
+	return stdcontext.WithValue(ctx, sensitiveKeysKey{}, newKeys)
+}
+
+func IsSensitiveKey(ctx stdcontext.Context, key string) bool {
+	if ctx == nil {
+		return false
+	}
+	keys, ok := ctx.Value(sensitiveKeysKey{}).(map[string]bool)
+	if !ok {
+		return false
+	}
+	return keys[key]
+}
+
+func WithSensitiveVariable(ctx stdcontext.Context, key string, value any) stdcontext.Context {
+	valStr := fmt.Sprintf("%v", value)
+	ctx, _ = WithMetadata(ctx, key, valStr)
+	return WithSensitiveKey(ctx, key)
+}
+
+
 // Internal Accessor
 func getRequestLayer(ctx stdcontext.Context) *RequestLayer {
 	if ctx == nil {

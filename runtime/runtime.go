@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,9 +50,11 @@ func (r *CoreRuntime) Initialize(ctx context.Context) error {
 	r.cfg = cfg
 	r.lifecycle.Configure(cfg.Lifecycle.RestartCooldownMS, cfg.Lifecycle.AcceptWhenDegraded)
 
-	// 2. Setup Logger
+	// 2. Setup Logger & Telemetry settings
+	r.configureLoggerAndTelemetry(cfg)
+
 	if r.logger == nil {
-		r.logger = observability.NewJSONLogger(cfg.Runtime.LogLevel)
+		r.logger = observability.NewPlatformLogger()
 	}
 
 	// 3. Setup Event Bus
@@ -170,7 +173,7 @@ func (r *CoreRuntime) Shutdown(ctx context.Context) error {
 			}
 		case <-drainTimeout:
 			if r.logger != nil {
-				r.logger.Warn("shutdown deadline exceeded; cancelling remaining requests")
+				r.logger.Warn(ctx, "shutdown deadline exceeded; cancelling remaining requests")
 			}
 			drained = true
 		case <-ctx.Done():
@@ -245,7 +248,8 @@ func (r *CoreRuntime) Restart(ctx context.Context) error {
 	r.cfg = cfg
 	r.lifecycle.Configure(cfg.Lifecycle.RestartCooldownMS, cfg.Lifecycle.AcceptWhenDegraded)
 
-	r.logger = observability.NewJSONLogger(cfg.Runtime.LogLevel)
+	r.configureLoggerAndTelemetry(cfg)
+	r.logger = observability.NewPlatformLogger()
 	r.events = kernel.NewInProcessEventBus()
 	r.telemetry = observability.NewInMemoryTelemetry()
 
@@ -287,4 +291,32 @@ func (r *CoreRuntime) Restart(ctx context.Context) error {
 	})
 
 	return nil
+}
+
+func (r *CoreRuntime) configureLoggerAndTelemetry(cfg *kernel.Config) {
+	observability.SetGlobalLogLevel(observability.ParseLevel(cfg.Logging.Level))
+	observability.ClearLogSinks()
+	observability.SetDebugMode(cfg.DebugMode)
+	observability.SetGlobalSamplingRate(cfg.Telemetry.Tracing.Sampling.DefaultRate)
+	for k, rate := range cfg.Telemetry.Tracing.Sampling.PriorityOverrides {
+		observability.SetPriorityOverride(k, rate)
+	}
+
+	isJSON := strings.ToLower(cfg.Logging.Format) == "json"
+	for _, sinkName := range cfg.Logging.Sinks {
+		switch strings.ToLower(sinkName) {
+		case "stdout":
+			observability.RegisterLogSink(observability.NewStdoutSink(isJSON))
+		case "file":
+			if cfg.Logging.FilePath != "" {
+				if fileSink, err := observability.NewFileSink(cfg.Logging.FilePath, isJSON); err == nil {
+					observability.RegisterLogSink(fileSink)
+				}
+			}
+		case "otlp":
+			if cfg.Logging.OTLPEndpoint != "" {
+				observability.RegisterLogSink(observability.NewOTLPSink(cfg.Logging.OTLPEndpoint))
+			}
+		}
+	}
 }

@@ -124,7 +124,7 @@ func (em *ExecutionManager) Submit(ctx context.Context, req *kernel.ExecutionReq
 	em.execMu.Lock()
 	if em.scheduler.Size() >= cap(em.queue) {
 		em.execMu.Unlock()
-		em.telemetry.IncrementCounter("runtime_executions_total", map[string]string{"status": "saturated"})
+		em.telemetry.Counter("runtime_executions_total").Inc(ctx, observability.Label{Key: "status", Value: "saturated"})
 		return nil, kernel.NewError(kernel.ErrCategorySaturation, "execution queue is full", false, nil)
 	}
 
@@ -453,6 +453,23 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 			currAttempt.EndedAt = &endedAt
 			exec.Attempts = append(exec.Attempts, currAttempt)
 			exec.Unlock()
+
+			if outcome.res != nil {
+				if outcome.res.TokenUsage != nil {
+					em.telemetry.RecordTokenUsage(attemptCtx, observability.TokenUsage{
+						PromptTokens:     int64(outcome.res.TokenUsage.PromptTokens),
+						CompletionTokens: int64(outcome.res.TokenUsage.CompletionTokens),
+						TotalTokens:      int64(outcome.res.TokenUsage.TotalTokens),
+						Provider:         p.Name(),
+					})
+				}
+				if outcome.res.Cost != nil && outcome.res.Cost.AmountUSD != 0 {
+					em.telemetry.RecordCost(attemptCtx, observability.CostEstimate{
+						AmountUSD: outcome.res.Cost.AmountUSD,
+						Provider:  p.Name(),
+					})
+				}
+			}
 			return outcome.res, nil
 		}
 
@@ -460,6 +477,18 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 		exec.Lock()
 		exec.Attempts = append(exec.Attempts, currAttempt)
 		exec.Unlock()
+
+		// Cost fallback estimation on failure
+		promptText := extractPrompt(exec.Request.Payload)
+		estUsage := observability.EstimateStreamingTokenUsage(promptText, "")
+		estUsage.Provider = p.Name()
+		em.telemetry.RecordTokenUsage(attemptCtx, estUsage)
+		estCost := float64(estUsage.TotalTokens) * 0.0000015
+		em.telemetry.RecordCost(attemptCtx, observability.CostEstimate{
+			AmountUSD: estCost,
+			Provider:  p.Name(),
+		})
+
 		return nil, outcome.err
 
 	case <-attemptCtx.Done():
@@ -477,6 +506,18 @@ func (em *ExecutionManager) runSingleAttempt(ctx context.Context, exec *kernel.E
 		exec.Lock()
 		exec.Attempts = append(exec.Attempts, currAttempt)
 		exec.Unlock()
+
+		// Cost fallback estimation on timeout
+		promptText := extractPrompt(exec.Request.Payload)
+		estUsage := observability.EstimateStreamingTokenUsage(promptText, "")
+		estUsage.Provider = p.Name()
+		em.telemetry.RecordTokenUsage(attemptCtx, estUsage)
+		estCost := float64(estUsage.TotalTokens) * 0.0000015
+		em.telemetry.RecordCost(attemptCtx, observability.CostEstimate{
+			AmountUSD: estCost,
+			Provider:  p.Name(),
+		})
+
 		return nil, lastErr
 	}
 }
@@ -616,7 +657,7 @@ func (em *ExecutionManager) publishOutcomeEvents(ctx context.Context, exec *kern
 				"token_usage":  tok,
 			},
 		})
-		em.telemetry.IncrementCounter("runtime_executions_total", map[string]string{"status": "succeeded"})
+		em.telemetry.Counter("runtime_executions_total").Inc(ctx, observability.Label{Key: "status", Value: "succeeded"})
 	case kernel.ExecStateTimedOut:
 		_ = em.events.Publish(ctx, kernel.Event{
 			Type:      "execution.timed_out",
@@ -627,7 +668,7 @@ func (em *ExecutionManager) publishOutcomeEvents(ctx context.Context, exec *kern
 				"elapsed_ms":            exec.Result.Duration.Milliseconds(),
 			},
 		})
-		em.telemetry.IncrementCounter("runtime_executions_total", map[string]string{"status": "timed_out"})
+		em.telemetry.Counter("runtime_executions_total").Inc(ctx, observability.Label{Key: "status", Value: "timed_out"})
 	case kernel.ExecStateCancelled:
 		_ = em.events.Publish(ctx, kernel.Event{
 			Type:      "execution.cancelled",
@@ -637,7 +678,7 @@ func (em *ExecutionManager) publishOutcomeEvents(ctx context.Context, exec *kern
 				"reason":       "caller_requested",
 			},
 		})
-		em.telemetry.IncrementCounter("runtime_executions_total", map[string]string{"status": "cancelled"})
+		em.telemetry.Counter("runtime_executions_total").Inc(ctx, observability.Label{Key: "status", Value: "cancelled"})
 	default:
 		_ = em.events.Publish(ctx, kernel.Event{
 			Type:      eventExecutionFailed,
@@ -648,7 +689,7 @@ func (em *ExecutionManager) publishOutcomeEvents(ctx context.Context, exec *kern
 				"attempt_count":  len(exec.Attempts),
 			},
 		})
-		em.telemetry.IncrementCounter("runtime_executions_total", map[string]string{"status": "failed"})
+		em.telemetry.Counter("runtime_executions_total").Inc(ctx, observability.Label{Key: "status", Value: "failed"})
 	}
 }
 
@@ -675,7 +716,7 @@ func (em *ExecutionManager) runExecution(exec *kernel.Execution) {
 			em.notifyWaiters(exec.ID)
 
 			if em.logger != nil {
-				em.logger.Fatal(fmt.Sprintf("panic recovered in execution %s: %v", exec.ID, r))
+				em.logger.Fatal(context.Background(), fmt.Sprintf("panic recovered in execution %s: %v", exec.ID, r))
 			}
 		}
 	}()
@@ -687,8 +728,8 @@ func (em *ExecutionManager) runExecution(exec *kernel.Execution) {
 	exec.Unlock()
 
 	ctx := context.Background()
-	spanCtx, endSpan := em.telemetry.StartSpan(ctx, "ExecutionManager.runExecution")
-	defer endSpan()
+	spanCtx, span := em.telemetry.StartSpan(ctx, "ExecutionManager.runExecution")
+	defer span.End()
 
 	_ = em.events.Publish(spanCtx, kernel.Event{
 		Type:      "execution.started",
@@ -904,4 +945,21 @@ func (em *ExecutionManager) ActiveCount() int {
 
 func isTerminalState(state kernel.ExecutionState) bool {
 	return state == kernel.ExecStateSucceeded || state == kernel.ExecStateFailed || state == kernel.ExecStateCancelled || state == kernel.ExecStateTimedOut
+}
+
+func extractPrompt(payload any) string {
+	if payload == nil {
+		return ""
+	}
+	if str, ok := payload.(string); ok {
+		return str
+	}
+	if m, ok := payload.(map[string]any); ok {
+		if promptVal, ok := m["prompt"]; ok {
+			if str, ok := promptVal.(string); ok {
+				return str
+			}
+		}
+	}
+	return fmt.Sprintf("%v", payload)
 }

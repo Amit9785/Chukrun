@@ -405,3 +405,20 @@ func TestContextMergeAdvanced(t *testing.T) {
 		t.Error("expected error merging conflicting request layers under ErrorOnConflict")
 	}
 }
+
+func TestSensitiveContextVariables(t *testing.T) {
+	root := NewRootContext("test-inst", "v1.0")
+
+	ctxKey := WithSensitiveKey(root, "api_key")
+	if !IsSensitiveKey(ctxKey, "api_key") {
+		t.Error("expected api_key to be marked sensitive")
+	}
+	if IsSensitiveKey(ctxKey, "other") {
+		t.Error("expected other key to not be marked sensitive")
+	}
+
+	ctxVar := WithSensitiveVariable(root, "secret_var", "secret_val")
+	if !IsSensitiveKey(ctxVar, "secret_var") {
+		t.Error("expected secret_var to be marked sensitive")
+	}
+}

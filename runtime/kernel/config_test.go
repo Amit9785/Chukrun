@@ -86,3 +86,49 @@ func TestSecretInterpolation(t *testing.T) {
 		t.Errorf("expected key to be sk-1234567890, got: %s", cfgOverrides.Providers[0].APIKey)
 	}
 }
+
+func TestConfigProductionDebugSafety(t *testing.T) {
+	cfg := GetDefaultConfig()
+	cfg.Runtime.Environment = "production"
+	cfg.DebugMode = true
+	cfg.DebugModeAcknowledgeProductionRisk = false
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation to fail when debug mode is enabled in production without acknowledgment")
+	}
+
+	cfg.DebugModeAcknowledgeProductionRisk = true
+	err = cfg.Validate()
+	if err != nil {
+		t.Errorf("expected validation to pass with acknowledgment, got: %v", err)
+	}
+}
+
+func TestConfigOverridesAndDefaults(t *testing.T) {
+	cfg := GetDefaultConfig()
+
+	overrides := &Config{}
+	overrides.Logging.Level = "warn"
+	overrides.Logging.Format = "json"
+	overrides.Logging.Sinks = []string{"stdout", "file"}
+	overrides.Logging.FilePath = "test.log"
+	overrides.Logging.OTLPEndpoint = "http://localhost:4317"
+	overrides.Logging.Redaction.Enabled = true
+
+	overrides.Telemetry.Metrics.Exporter = "otlp"
+	overrides.Telemetry.Metrics.Endpoint = "localhost:4317"
+	overrides.Telemetry.Tracing.Exporter = "otlp"
+	overrides.Telemetry.Tracing.Endpoint = "localhost:4318"
+	overrides.Telemetry.Tracing.Sampling.DefaultRate = 0.5
+	overrides.Telemetry.Tracing.Sampling.PriorityOverrides = map[string]float64{"critical": 1.0}
+
+	applyCodeOverrides(cfg, overrides)
+
+	if cfg.Logging.Level != "warn" || cfg.Logging.Format != "json" || len(cfg.Logging.Sinks) != 2 {
+		t.Errorf("failed to apply logging overrides: %+v", cfg.Logging)
+	}
+	if cfg.Telemetry.Tracing.Sampling.DefaultRate != 0.5 {
+		t.Errorf("failed to apply telemetry overrides: %+v", cfg.Telemetry.Tracing.Sampling)
+	}
+}
