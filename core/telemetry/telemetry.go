@@ -201,7 +201,7 @@ func GetGlobalSamplingRate() float64 {
 
 func SetPriorityOverride(priority string, rate float64) {
 	priorityOverridesMu.Lock()
-	priorityOverridesMu.Unlock()
+	defer priorityOverridesMu.Unlock()
 	priorityOverrides[strings.ToLower(priority)] = rate
 }
 

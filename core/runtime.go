@@ -56,7 +56,7 @@ type CoreRuntime struct {
 
 func (r *CoreRuntime) Initialize(ctx context.Context) error {
 	r.mu.Lock()
-	r.mu.Unlock()
+	defer r.mu.Unlock()
 
 	if r.lifecycle.GetState() != lifecycle.StateUninitialized {
 		return errors.NewError(errors.ErrCategoryInternal, "runtime already initialized or initialization in progress", false, nil)
