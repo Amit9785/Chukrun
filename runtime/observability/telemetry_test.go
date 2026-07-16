@@ -61,6 +61,7 @@ func TestTelemetryTokenUsageAndCost(t *testing.T) {
 }
 
 func TestTelemetryTraceContextPropagation(t *testing.T) {
+	SetGlobalSamplingRate(1.0)
 	tel := NewInMemoryTelemetry()
 	ctx := stdcontext.Background()
 
