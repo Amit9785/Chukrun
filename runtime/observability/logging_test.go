@@ -291,6 +291,7 @@ func TestParseLogLevel(t *testing.T) {
 
 func TestPlatformLoggerWithChild(t *testing.T) {
 	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
 	logger := NewPlatformLogger().With(Field{Key: "component", Value: "test_comp"})
 	logger.Info(stdcontext.Background(), "child msg")
 
@@ -311,6 +312,7 @@ func TestPlatformLoggerWithChild(t *testing.T) {
 
 func TestPlatformLoggerFatalLogging(t *testing.T) {
 	sink := setupMockSink()
+	SetGlobalLogLevel(LevelDebug)
 	logger := NewPlatformLogger()
 	logger.Fatal(stdcontext.Background(), "fatal msg")
 
