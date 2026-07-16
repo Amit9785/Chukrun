@@ -288,3 +288,38 @@ func TestParseLogLevel(t *testing.T) {
 		t.Error("expected LevelInfo for invalid")
 	}
 }
+
+func TestPlatformLoggerWithChild(t *testing.T) {
+	sink := setupMockSink()
+	logger := NewPlatformLogger().With(Field{Key: "component", Value: "test_comp"})
+	logger.Info(stdcontext.Background(), "child msg")
+
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log")
+	}
+
+	fields := make(map[string]any)
+	for _, f := range records[0].Fields {
+		fields[f.Key] = f.Value
+	}
+	if fields["component"] != "test_comp" {
+		t.Errorf("expected component to be test_comp, got %v", fields["component"])
+	}
+}
+
+func TestPlatformLoggerFatalLogging(t *testing.T) {
+	sink := setupMockSink()
+	logger := NewPlatformLogger()
+	logger.Fatal(stdcontext.Background(), "fatal msg")
+
+	time.Sleep(100 * time.Millisecond)
+	records := sink.GetRecords()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log")
+	}
+	if records[0].Level != LevelFatal {
+		t.Errorf("expected LevelFatal, got %v", records[0].Level)
+	}
+}

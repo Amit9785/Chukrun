@@ -183,3 +183,36 @@ func TestTelemetryInvalidW3C(t *testing.T) {
 		t.Error("expected false for incorrect parts")
 	}
 }
+
+func TestTelemetryExtraUtilities(t *testing.T) {
+	SetDebugMode(true)
+	if !IsDebugModeEnabled() {
+		t.Error("expected debug mode to be enabled")
+	}
+	SetDebugMode(false)
+	if IsDebugModeEnabled() {
+		t.Error("expected debug mode to be disabled")
+	}
+
+	rate, ok := GetPriorityOverride("critical")
+	if !ok || rate != 1.0 {
+		t.Errorf("expected 1.0 for critical override, got %f", rate)
+	}
+
+	tel := NewInMemoryTelemetry()
+	tel.Counter("c").Inc(stdcontext.Background())
+	tel.ClearMetrics()
+	if len(tel.GetMetrics()) != 0 {
+		t.Error("expected metrics to be cleared")
+	}
+
+	SetGlobalSamplingRate(0.0)
+	_, span := tel.StartSpan(stdcontext.Background(), "unsampled")
+	span.SetAttribute("k", "v")
+	span.End()
+
+	_, ok = ExtractW3C("")
+	if ok {
+		t.Error("expected false for empty W3C header")
+	}
+}
