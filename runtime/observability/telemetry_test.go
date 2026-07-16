@@ -112,7 +112,7 @@ func (m *MockExporter) Export(metrics []MetricValue) error {
 
 func TestTelemetryMetricExporter(t *testing.T) {
 	exporter := &MockExporter{}
-	RegisterMetricExporter(exporter)
+	RegisterMetricsExporter(exporter)
 	defer func() {
 		globalExporterRegistry.mu.Lock()
 		globalExporterRegistry.exporters = nil
