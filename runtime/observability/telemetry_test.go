@@ -3,6 +3,7 @@ package observability
 import (
 	stdcontext "context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -94,5 +95,91 @@ func TestTelemetryTraceContextPropagation(t *testing.T) {
 	finished := tel.GetFinishedSpans()
 	if len(finished) < 2 {
 		t.Errorf("expected 2 finished spans, got %d", len(finished))
+	}
+}
+
+type MockExporter struct {
+	mu      sync.Mutex
+	metrics []MetricValue
+}
+
+func (m *MockExporter) Export(metrics []MetricValue) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metrics = append(m.metrics, metrics...)
+	return nil
+}
+
+func TestTelemetryMetricExporter(t *testing.T) {
+	exporter := &MockExporter{}
+	RegisterMetricExporter(exporter)
+	defer func() {
+		globalExporterRegistry.mu.Lock()
+		globalExporterRegistry.exporters = nil
+		globalExporterRegistry.mu.Unlock()
+	}()
+
+	tel := NewInMemoryTelemetry()
+	tel.Counter("exported_counter").Inc(stdcontext.Background())
+
+	exporter.mu.Lock()
+	l := len(exporter.metrics)
+	exporter.mu.Unlock()
+	if l == 0 {
+		t.Error("expected metric to be exported")
+	}
+}
+
+func TestTelemetryPrioritySampling(t *testing.T) {
+	SetGlobalSamplingRate(0.0)
+	SetPriorityOverride("critical", 1.0)
+	defer SetPriorityOverride("critical", 0.0)
+
+	tel := NewInMemoryTelemetry()
+	ctx := rtcontext.WithExecution(stdcontext.Background(), "exec-crit", 5*time.Second, kernel.PriorityClassCritical)
+
+	_, span := tel.StartSpan(ctx, "critical-span")
+	if !span.(*platformSpan).sampled {
+		t.Error("expected critical span to be sampled due to override")
+	}
+}
+
+func TestTelemetrySpanRedaction(t *testing.T) {
+	SetGlobalSamplingRate(1.0)
+	tel := NewInMemoryTelemetry()
+	ctx := stdcontext.Background()
+
+	ctx = rtcontext.WithSensitiveVariable(ctx, "secret_var", "secret-value")
+
+	_, span := tel.StartSpan(ctx, "span-redact")
+	span.SetAttribute("secret_var", "secret-value")
+	span.SetAttribute("api_key", "my-key")
+	span.SetAttribute("normal_attr", "normal-value")
+	span.End()
+
+	spans := tel.GetFinishedSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	attrs := spans[0]["attributes"].(map[string]any)
+	if attrs["secret_var"] != "[REDACTED]" {
+		t.Errorf("expected secret_var to be redacted, got %v", attrs["secret_var"])
+	}
+	if attrs["api_key"] != "[REDACTED]" {
+		t.Errorf("expected api_key to be redacted, got %v", attrs["api_key"])
+	}
+	if attrs["normal_attr"] != "normal-value" {
+		t.Errorf("expected normal_attr to be normal-value, got %v", attrs["normal_attr"])
+	}
+}
+
+func TestTelemetryInvalidW3C(t *testing.T) {
+	_, ok := ExtractW3C("invalid-header")
+	if ok {
+		t.Error("expected false for invalid-header")
+	}
+	_, ok = ExtractW3C("00-traceid-spanid")
+	if ok {
+		t.Error("expected false for incorrect parts")
 	}
 }

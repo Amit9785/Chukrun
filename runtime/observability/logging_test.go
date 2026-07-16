@@ -3,6 +3,7 @@ package observability
 import (
 	stdcontext "context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -187,5 +188,103 @@ func TestPlatformLoggerRedaction(t *testing.T) {
 	}
 	if fields["password"] != "[REDACTED]" {
 		t.Error("expected password Context field to be redacted")
+	}
+}
+
+type BlockingSink struct {
+	blocked chan struct{}
+}
+
+func (s *BlockingSink) Write(ctx stdcontext.Context, entry LogEntry) error {
+	<-s.blocked
+	return nil
+}
+func (s *BlockingSink) Close() error { return nil }
+
+func TestPlatformLoggerBackpressure(t *testing.T) {
+	sink := &BlockingSink{blocked: make(chan struct{})}
+	ClearLogSinks()
+	RegisterLogSink(sink)
+	defer func() {
+		close(sink.blocked)
+		ClearLogSinks()
+	}()
+
+	logger := NewPlatformLogger()
+	ctx := stdcontext.Background()
+
+	for i := 0; i < 5005; i++ {
+		logger.Debug(ctx, "pressure log")
+	}
+}
+
+func TestStdoutSinkFormatting(t *testing.T) {
+	jsonSink := NewStdoutSink(true)
+	_ = jsonSink.Write(stdcontext.Background(), LogEntry{
+		Timestamp: time.Now(),
+		Level:     LevelInfo,
+		Message:   "test message",
+		Fields:    []Field{{Key: "key1", Value: "val1"}},
+	})
+
+	humanSink := NewStdoutSink(false)
+	_ = humanSink.Write(stdcontext.Background(), LogEntry{
+		Timestamp: time.Now(),
+		Level:     LevelInfo,
+		Message:   "test message",
+		Fields:    []Field{{Key: "key1", Value: "val1"}},
+	})
+}
+
+func TestFileAndOTLPSinks(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "logging_test_*.log")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+	tempFile.Close()
+
+	fileSink, err := NewFileSink(tempFile.Name(), true)
+	if err != nil {
+		t.Fatalf("failed to create file sink: %v", err)
+	}
+	defer fileSink.Close()
+
+	_ = fileSink.Write(stdcontext.Background(), LogEntry{
+		Timestamp: time.Now(),
+		Level:     LevelInfo,
+		Message:   "file log",
+	})
+
+	otlpSink := NewOTLPSink("http://localhost:4317")
+	defer otlpSink.Close()
+	_ = otlpSink.Write(stdcontext.Background(), LogEntry{
+		Timestamp: time.Now(),
+		Level:     LevelInfo,
+		Message:   "otlp log",
+	})
+	if len(otlpSink.GetRecords()) != 1 {
+		t.Errorf("expected 1 record in OTLPSink")
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	if ParseLevel("debug") != LevelDebug {
+		t.Error("expected LevelDebug")
+	}
+	if ParseLevel("info") != LevelInfo {
+		t.Error("expected LevelInfo")
+	}
+	if ParseLevel("warn") != LevelWarn {
+		t.Error("expected LevelWarn")
+	}
+	if ParseLevel("error") != LevelError {
+		t.Error("expected LevelError")
+	}
+	if ParseLevel("fatal") != LevelFatal {
+		t.Error("expected LevelFatal")
+	}
+	if ParseLevel("invalid") != LevelInfo {
+		t.Error("expected LevelInfo for invalid")
 	}
 }
