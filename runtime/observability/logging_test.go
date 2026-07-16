@@ -207,6 +207,10 @@ func TestPlatformLoggerBackpressure(t *testing.T) {
 	RegisterLogSink(sink)
 	defer func() {
 		close(sink.blocked)
+		for len(globalRegistry.queue) > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		time.Sleep(20 * time.Millisecond)
 		ClearLogSinks()
 	}()
 
