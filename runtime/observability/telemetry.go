@@ -13,7 +13,6 @@ import (
 	"time"
 
 	rtcontext "chukrun/runtime/context"
-	"chukrun/runtime/kernel"
 )
 
 type Label struct {
