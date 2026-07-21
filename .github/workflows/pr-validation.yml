@@ -165,3 +165,28 @@ jobs:
           # CKV_SECRET_6/4: false positives — field-name strings and connection string
           #   templates in YAML definitions trigger entropy/pattern heuristics.
           skip_check: CKV_OPENAPI_5,CKV_SECRET_6,CKV_SECRET_4
+
+  python-unit-test:
+    name: Run Python SDK Unit & Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio grpcio grpcio-tools protobuf
+          pip install -e ./sdk-python
+
+      - name: Run Python SDK tests with coverage check
+        working-directory: sdk-python
+        run: |
+          pytest --cov=src/runtime --cov-report=term-missing --cov-fail-under=85
+
+

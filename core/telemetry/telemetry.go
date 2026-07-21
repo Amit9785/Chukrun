@@ -464,7 +464,7 @@ func (t *InMemoryTelemetry) recordMetric(ctx stdcontext.Context, name string, mt
 	globalExporterRegistry.mu.RUnlock()
 }
 
-func (t *InMemoryTelemetry) recordSpanEnd(ctx stdcontext.Context, name string, duration time.Duration, attrs map[string]any) {
+func (t *InMemoryTelemetry) recordSpanEnd(_ stdcontext.Context, name string, duration time.Duration, attrs map[string]any) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.finishedSpans = append(t.finishedSpans, map[string]any{

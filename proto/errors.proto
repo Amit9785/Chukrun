@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package runtime;
+
+option go_package = "chukrun/proto/runtime";
+
+message ErrorProto {
+  string category = 1;
+  string message = 2;
+  bool retryable = 3;
+  map<string, string> fields = 4;
+  string cause_message = 5;
+}

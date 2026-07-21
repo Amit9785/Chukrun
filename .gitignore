@@ -1,6 +1,35 @@
+# IDE and Editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Documentation / Draft ideas
 PRD-*.md
 AI runtime Idea.txt
 coverage/
-.idea/
-.vscode/
 bin/
+
+# Python temporary, cache, and environment files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+ENV/
+python-embed/
+
+# Python build & distribution artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+sdk-python/build/
+sdk-python/dist/
+sdk-python/*.egg-info/
+sdk-python/src/*.egg-info/
