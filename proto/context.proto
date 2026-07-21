@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package runtime;
+
+option go_package = "chukrun/proto/runtime";
+
+import "google/protobuf/timestamp.proto";
+
+message UserContextProto {
+  string user_id = 1;
+  string email = 2;
+  map<string, string> metadata = 3;
+}
+
+message CostBudgetProto {
+  double limit_usd = 1;
+  double spent_usd = 2;
+  int64 limit_tokens = 3;
+  int64 spent_tokens = 4;
+}
+
+message ContextProto {
+  string trace_id = 1;
+  string session_id = 2;
+  UserContextProto user = 3;
+  map<string, string> request_variables = 4;
+  google.protobuf.Timestamp deadline = 5;
+  int32 priority = 6;
+  CostBudgetProto cost_budget = 7;
+}

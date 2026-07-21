@@ -1,0 +1,8 @@
+{
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "extraPaths": [
+    "src"
+  ],
+  "pythonPath": "../python-embed/python.exe"
+}

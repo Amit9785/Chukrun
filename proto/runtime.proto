@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package runtime;
+
+option go_package = "chukrun/proto/runtime";
+
+import "google/protobuf/timestamp.proto";
+import "context.proto";
+import "errors.proto";
+
+service RuntimeService {
+  rpc Execute (ExecuteRequest) returns (ExecuteResponse);
+  rpc Stream (ExecuteRequest) returns (stream StreamChunk);
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+message RetryPolicyProto {
+  int32 max_attempts = 1;
+  string backoff_strategy = 2;
+  int64 base_delay_ns = 3;
+  int64 max_delay_ns = 4;
+  bool jitter = 5;
+}
+
+message TimeoutPolicyProto {
+  int64 total_ns = 1;
+  int64 per_attempt_ns = 2;
+}
+
+message ExecuteRequest {
+  ContextProto context = 1;
+  string id = 2;
+  string provider_ref = 3;
+  string payload = 4;
+  string priority = 5;
+  RetryPolicyProto retry_policy = 6;
+  TimeoutPolicyProto timeout_policy = 7;
+  map<string, string> metadata = 8;
+  string parent_id = 9;
+}
+
+message TokenUsageProto {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message CostEstimateProto {
+  double amount_usd = 1;
+}
+
+message AttemptProto {
+  int32 number = 1;
+  google.protobuf.Timestamp started_at = 2;
+  google.protobuf.Timestamp ended_at = 3;
+  ErrorProto error = 4;
+  string provider_ref = 5;
+}
+
+message ExecuteResponse {
+  ContextProto context = 1;
+  string id = 2;
+  string status = 3;
+  string state = 4;
+  string output = 5;
+  ErrorProto error = 6;
+  TokenUsageProto token_usage = 7;
+  CostEstimateProto cost = 8;
+  int64 duration_ns = 9;
+  int32 attempt_count = 10;
+  repeated AttemptProto attempts = 11;
+}
+
+message StreamChunk {
+  string id = 1;
+  string content = 2;
+  TokenUsageProto token_usage = 3;
+  ErrorProto error = 4;
+}
+
+message ComponentHealthProto {
+  string state = 1;
+  string details = 2;
+  bool fatal = 3;
+  string last_error = 4;
+  google.protobuf.Timestamp checked_at = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string overall = 1;
+  string state = 2;
+  map<string, ComponentHealthProto> components = 3;
+  google.protobuf.Timestamp since = 4;
+  string reason = 5;
+}
